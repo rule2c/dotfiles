@@ -10,7 +10,7 @@
 #
 #  用法：
 #    sudo bash node-setup.sh                                   # 交互式，按提示输入
-#    sudo bash node-setup.sh -d a.example.com -c cdn.example.com
+#    CF_Token=xxxx sudo -E bash node-setup.sh -d a.example.com -c cdn.example.com
 #    sudo bash node-setup.sh -d a.example.com -p 443 -u 443 --hop 20000-40000 -e me@example.com
 #    sudo bash node-setup.sh info                              # 重新显示节点信息
 #    sudo bash node-setup.sh uninstall                         # 卸载：列出本机所有代理（含其他脚本装的），选择卸载
@@ -18,7 +18,11 @@
 #
 #  参数：
 #    -d, --domain   主域名（必填）。Cloudflare 灰色云朵，A 记录指向本机。Reality 和 Hysteria2 共用
-#    -c, --cdn      CDN 域名（可选，不填就不部署 CDN）。先灰色云朵申请证书，部署完改成橙色云朵
+#    -c, --cdn      CDN 域名（可选，不填就不部署 CDN）。Cloudflare 橙色云朵，A 记录指向本机
+#        --cf-token Cloudflare API Token（也可用环境变量 CF_Token，或运行时输入）。权限：
+#                   Zone → Zone → Read 和 Zone → DNS → Edit，范围只选你的域名
+#                   用来做 DNS 验证申请【通配符证书】（*.example.com），证书透明度日志里看不到具体子域名
+#        --http01   不用 Cloudflare API，改用 80 端口验证（会在公开日志里留下具体域名，不推荐）
 #    -p, --port     Reality 的 TCP 端口，默认 443
 #    -u, --hy2-port Hysteria2 的 UDP 端口，默认 443
 #        --hop      Hysteria2 端口跳跃范围，默认 20000-40000；off 表示关闭
@@ -38,6 +42,8 @@ STATE=$WORKDIR/state.env
 INFO=$WORKDIR/node-info.txt
 WEB=/var/www/proxy-node
 SSL=/etc/ssl/proxy-node
+MAIN_DIR=$SSL/main          # 主域名证书；CDN 域名若被同一张通配符覆盖，也用它
+CDN_DIR=$SSL/cdn
 NGX_SITE=/etc/nginx/sites-available/proxy-node
 XRAY_CFG=/usr/local/etc/xray/config.json
 XHTTP_SOCK=/dev/shm/xray-xhttp.sock
@@ -49,10 +55,11 @@ grn(){ printf '\033[32m%s\033[0m\n' "$*"; }
 ylw(){ printf '\033[33m%s\033[0m\n' "$*"; }
 die(){ red "$*"; exit 1; }
 
-usage(){ sed -n '3,37s/^# \{0,1\}//p' "$0" 2>/dev/null || echo "用法：sudo bash node-setup.sh -d 主域名 [-c CDN域名] [-p 端口] [-u hy2端口] [--hop 范围]"; }
+usage(){ awk 'NR>2 && /^# =====/{exit} NR>2{sub(/^# ?/,""); print}' "$0" 2>/dev/null || echo "用法：sudo bash node-setup.sh -d 主域名 [-c CDN域名] [-p 端口] [-u hy2端口] [--hop 范围]"; }
 
 # ---------------------------------------------------------------- 参数 ----
 CMD=install DOMAIN="" CDN="" RPORT="" HPORT="" HOP="" EMAIL="" NODE="" OBFS=0 NO_HY2=0 RESET=0 ALL=0 YES=0
+CF_TOKEN=${CF_Token:-} HTTP01=0
 
 parse_args(){
   while [[ $# -gt 0 ]]; do
@@ -65,6 +72,8 @@ parse_args(){
       --hop)         HOP=${2:?缺少端口范围}; shift ;;
       -e|--email)    EMAIL=${2:?缺少邮箱}; shift ;;
       -n|--name)     NODE=${2:?缺少名称}; shift ;;
+      --cf-token)    CF_TOKEN=${2:?缺少 Token}; shift ;;
+      --http01)      HTTP01=1 ;;
       --obfs)        OBFS=1 ;;
       --no-hy2)      NO_HY2=1 ;;
       --reset)       RESET=1 ;;
@@ -86,7 +95,7 @@ interactive(){
   [[ -t 0 ]] || die "缺少 -d 主域名（非交互环境请用参数传入，见 --help）"
   echo
   grn "== 一键部署：Reality 偷自己 + Hysteria2 + CDN 备用 =="
-  ylw "主域名需要在 Cloudflare 设为【灰色云朵】并指向本机；CDN 域名可以留空跳过。"
+  ylw "主域名：Cloudflare【灰色云朵】指向本机；CDN 域名：【橙色云朵】指向本机，可留空跳过。"
   echo
   while [[ -z $DOMAIN ]]; do ask DOMAIN "主域名（Reality + Hysteria2 用）" ""; done
   ask CDN   "CDN 域名（留空不部署）" ""
@@ -100,11 +109,25 @@ interactive(){
   ask EMAIL "证书邮箱" "admin@$DOMAIN"
 }
 
+# Token 不放在命令行参数里也行：环境变量 CF_Token 或这里隐藏输入
+ask_token(){
+  (( HTTP01 )) && return 0
+  [[ -n $CF_TOKEN ]] && return 0
+  [[ -t 0 ]] || die "缺少 Cloudflare API Token：用环境变量 CF_Token 或 --cf-token 传入（或加 --http01）"
+  echo
+  ylw "需要 Cloudflare API Token 来申请通配符证书（DNS 验证）。"
+  ylw "创建：Cloudflare → 我的个人资料 → API 令牌 → 创建令牌 → 自定义"
+  ylw "  权限：区域 → 区域 → 读取；区域 → DNS → 编辑。区域资源：只选你的域名。"
+  read -rsp "Cloudflare API Token（输入不显示）: " CF_TOKEN || true; echo
+  [[ -n $CF_TOKEN ]] || die "没有输入 Token（不想用 Token 可加 --http01）"
+}
+
 validate(){
   local re='^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
   [[ $DOMAIN =~ $re ]] || die "主域名格式不对：$DOMAIN"
   [[ -z $CDN || $CDN =~ $re ]] || die "CDN 域名格式不对：$CDN"
   [[ $DOMAIN != "$CDN" ]] || die "主域名和 CDN 域名必须不同（一个灰云、一个橙云）"
+  [[ -z $CF_TOKEN || $CF_TOKEN =~ ^[A-Za-z0-9_-]+$ ]] || die "Cloudflare Token 格式不对"
   RPORT=${RPORT:-443}; HPORT=${HPORT:-443}; HOP=${HOP:-20000-40000}
   EMAIL=${EMAIL:-admin@$DOMAIN}
   NODE=${NODE:-${DOMAIN%%.*}}
@@ -148,8 +171,55 @@ install_deps(){
   systemctl enable --now cron >/dev/null 2>&1 || true
 }
 
+cf_api(){ curl -sS --max-time 20 -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/$1"; }
+
+# cf_zone 域名 → 输出 "zone_id zone名"
+cf_zone(){
+  local n=$1 r id
+  while [[ $n == *.* ]]; do
+    r=$(cf_api "zones?name=$n") || die "连不上 Cloudflare API"
+    jq -e '.success' >/dev/null 2>&1 <<<"$r" \
+      || die "Cloudflare API 报错：$(jq -r '.errors[0].message // "未知错误"' <<<"$r" 2>/dev/null)（检查 Token 是否有 区域:读取 + DNS:编辑 权限）"
+    id=$(jq -r '.result[0].id // empty' <<<"$r")
+    [[ -n $id ]] && { echo "$id $n"; return 0; }
+    n=${n#*.}
+  done
+  return 1
+}
+
+# cf_check 域名 zone_id 期望(gray|orange)
+cf_check(){
+  local d=$1 zid=$2 want=$3 r hit proxied
+  r=$(cf_api "zones/$zid/dns_records?type=A&name=$d") || die "连不上 Cloudflare API"
+  jq -e '.success' >/dev/null 2>&1 <<<"$r" \
+    || die "读取 $d 的 DNS 记录失败：$(jq -r '.errors[0].message // "未知错误"' <<<"$r" 2>/dev/null)"
+  hit=$(jq --arg ip "$IP" '[.result[]? | select(.content==$ip)] | length' <<<"$r")
+  if (( hit == 0 )); then
+    red "$d 在 Cloudflare 没有指向本机 $IP 的 A 记录。"
+    die "请添加 A 记录：$d → $IP（$([[ $want == gray ]] && echo 灰色云朵 || echo 橙色云朵)），然后重跑。"
+  fi
+  proxied=$(jq -r --arg ip "$IP" '[.result[] | select(.content==$ip)][0].proxied' <<<"$r")
+  if [[ $want == gray && $proxied == true ]]; then
+    die "$d 现在是橙色云朵。Reality / Hysteria2 必须直连，请改成【灰色云朵】后重跑。"
+  fi
+  if [[ $want == orange && $proxied != true ]]; then
+    ylw "  $d 现在是灰色云朵：真实 IP 会公开在 DNS 里。建议改成【橙色云朵】（现在申请证书不需要灰云了）。"
+  fi
+}
+
 check_dns(){
   IP=$(public_ip); [[ -n $IP ]] || die "获取不到本机公网 IPv4"
+  if (( ! HTTP01 )); then
+    local z
+    z=$(cf_zone "$DOMAIN") || die "Token 看不到 $DOMAIN 所在的域名（区域），检查 Token 的区域资源范围"
+    ZONE_MAIN=${z#* }; cf_check "$DOMAIN" "${z%% *}" gray
+    if [[ -n $CDN ]]; then
+      z=$(cf_zone "$CDN") || die "Token 看不到 $CDN 所在的域名（区域）"
+      ZONE_CDN=${z#* }; cf_check "$CDN" "${z%% *}" orange
+    fi
+    grn "  本机 $IP，Cloudflare DNS 记录检查通过"
+    return 0
+  fi
   local r
   r=$(getent ahostsv4 "$DOMAIN" | awk 'NR==1{print $1}' || true)
   if [[ $r != "$IP" ]]; then
@@ -204,12 +274,12 @@ load_or_gen_state(){
   ( umask 077
     printf '%s=%q\n' UUID "$UUID" PRIV "$PRIV" PUB "$PUB" SID "$SID" XPATH "$XPATH" \
       WSPATH "$WSPATH" HY_PASS "$HY_PASS" OBFS_PASS "$OBFS_PASS" \
-      SAVED_DOMAIN "$DOMAIN" SAVED_CDN "$CDN" > "$STATE" )
+      SAVED_DOMAIN "$DOMAIN" SAVED_CDN "$CDN" SAVED_CERTS "$CERT_MAIN${CERT_CDN:+ $CERT_CDN}" > "$STATE" )
 }
 
 # ------------------------------------------------------------ nginx 站点 ----
 setup_site_http(){
-  grn "[2/9] 配置伪装站点（80 端口，用于申请证书）"
+  grn "[2/9] 配置伪装站点"
   mkdir -p "$WEB"
   [[ -f $WEB/index.html ]] || cat > "$WEB/index.html" <<'EOF'
 <!doctype html>
@@ -252,8 +322,6 @@ EOF
 
   local common
   common=$(cat <<EOF
-    ssl_certificate     $SSL/fullchain.crt;
-    ssl_certificate_key $SSL/private.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ecdh_curve X25519:prime256v1:secp384r1;
     ssl_session_timeout 1d;
@@ -280,6 +348,8 @@ server {
     listen 127.0.0.1:$TARGET_PORT ssl$h2l;
     $h2d
     server_name $DOMAIN;
+    ssl_certificate     $MAIN_DIR/fullchain.crt;
+    ssl_certificate_key $MAIN_DIR/private.key;
 $common
     $altsvc
     location / { try_files \$uri \$uri/ =404; }
@@ -294,6 +364,8 @@ server {
     listen 127.0.0.1:$TARGET_PORT ssl$h2l;
     $h2d
     server_name $CDN;
+    ssl_certificate     $CDN_CERT_DIR/fullchain.crt;
+    ssl_certificate_key $CDN_CERT_DIR/private.key;
 $common
 
     # 以下 XHTTP 反代参数取自 Xray-core discussions #4118（XHTTP 五合一配置）
@@ -340,33 +412,92 @@ EOF
 }
 
 # ------------------------------------------------------------------ 证书 ----
-issue_cert(){
-  grn "[3/9] 申请 Let's Encrypt 证书"
-  [[ -x /root/.acme.sh/acme.sh ]] || curl -fsSL https://get.acme.sh | sh -s email="$EMAIL" >/dev/null
-  local ACME=/root/.acme.sh/acme.sh rc
-  $ACME --set-default-ca --server letsencrypt >/dev/null
+# cert_names 域名 区域 → 证书包含的名字（第一个是 acme.sh 里的证书名）
+#   a.example.com → *.example.com     example.com（区域本身）→ example.com *.example.com
+cert_names(){
+  if (( HTTP01 )); then echo "$1"
+  elif [[ $1 == "$2" ]]; then echo "$1 *.$1"
+  else echo "*.${1#*.}"; fi
+}
+
+ACME=/root/.acme.sh/acme.sh
+acme_issue(){ # acme_issue 名字...
+  local n rc
+  local -a args=()
+  for n in "$@"; do args+=(-d "$n"); done
+  if (( HTTP01 )); then args+=(--webroot "$WEB"); else args+=(--dns dns_cf); fi
   set +e
-  $ACME --issue -d "$DOMAIN" ${CDN:+-d "$CDN"} --webroot "$WEB" --keylength ec-256
+  if (( HTTP01 )); then $ACME --issue "${args[@]}" --keylength ec-256
+  else CF_Token=$CF_TOKEN $ACME --issue "${args[@]}" --keylength ec-256; fi
   rc=$?
   set -e
-  [[ $rc -eq 0 || $rc -eq 2 ]] || die "证书申请失败：确认域名是灰色云朵，且 VPS 商家防火墙放行了 TCP 80"
+  [[ $rc -eq 0 || $rc -eq 2 ]] && return 0
+  if (( HTTP01 )); then die "证书申请失败：确认域名是灰色云朵，且 VPS 商家防火墙放行了 TCP 80"
+  else die "证书申请失败：检查 Cloudflare Token 权限（区域:读取 + DNS:编辑）"; fi
+}
+
+acme_install(){ # acme_install 证书名 目录
+  mkdir -p "$2"
+  $ACME --install-cert -d "$1" --ecc \
+    --key-file "$2/private.key" --fullchain-file "$2/fullchain.crt" \
+    --reloadcmd /usr/local/bin/proxy-node-cert-reload >/dev/null
+  [[ -s $2/fullchain.crt ]] || die "证书文件不存在：$2/fullchain.crt"
+}
+
+issue_cert(){
+  grn "[3/9] 申请 Let's Encrypt 证书（$( (( HTTP01 )) && echo "HTTP 验证" || echo "DNS 验证，通配符")）"
+  [[ -x $ACME ]] || curl -fsSL https://get.acme.sh | sh -s email="$EMAIL" >/dev/null
+  $ACME --set-default-ca --server letsencrypt >/dev/null
 
   # 续期后：复制证书给 hysteria、重载 nginx、重启 hysteria（没装就跳过）
   cat > /usr/local/bin/proxy-node-cert-reload <<EOF
 #!/bin/sh
-if [ -d /etc/hysteria ] && id hysteria >/dev/null 2>&1; then
-  install -m 640 -o root -g hysteria $SSL/fullchain.crt /etc/hysteria/cert.crt
-  install -m 640 -o root -g hysteria $SSL/private.key   /etc/hysteria/cert.key
+if [ -d /etc/hysteria ] && id hysteria >/dev/null 2>&1 && [ -s $MAIN_DIR/fullchain.crt ]; then
+  install -m 640 -o root -g hysteria $MAIN_DIR/fullchain.crt /etc/hysteria/cert.crt
+  install -m 640 -o root -g hysteria $MAIN_DIR/private.key   /etc/hysteria/cert.key
 fi
 systemctl reload nginx 2>/dev/null || true
 systemctl try-restart hysteria-server 2>/dev/null || true
 EOF
   chmod +x /usr/local/bin/proxy-node-cert-reload
-  mkdir -p "$SSL"
-  $ACME --install-cert -d "$DOMAIN" --ecc \
-    --key-file "$SSL/private.key" --fullchain-file "$SSL/fullchain.crt" \
-    --reloadcmd /usr/local/bin/proxy-node-cert-reload >/dev/null
-  [[ -s $SSL/fullchain.crt ]] || die "证书文件不存在：$SSL/fullchain.crt"
+
+  local -a names
+  read -ra names <<<"$(cert_names "$DOMAIN" "${ZONE_MAIN:-}")"
+  CERT_MAIN=${names[0]}
+  ylw "  主证书：${names[*]}"
+  acme_issue "${names[@]}"
+  acme_install "$CERT_MAIN" "$MAIN_DIR"
+  CERT_CDN="" ; CDN_CERT_DIR=$MAIN_DIR
+  if [[ -n $CDN ]]; then
+    read -ra names <<<"$(cert_names "$CDN" "${ZONE_CDN:-}")"
+    if [[ ${names[0]} == "$CERT_MAIN" ]]; then
+      ylw "  CDN 域名由同一张证书覆盖"
+    else
+      CERT_CDN=${names[0]}; CDN_CERT_DIR=$CDN_DIR
+      ylw "  CDN 证书：${names[*]}"
+      acme_issue "${names[@]}"
+      acme_install "$CERT_CDN" "$CDN_DIR"
+    fi
+  fi
+  prune_old_certs
+}
+
+# 删掉本脚本以前申请、现在不再使用的证书（如旧版的"主域名 + CDN 域名"单证书）
+prune_old_certs(){
+  [[ -f $STATE ]] || return 0
+  local old c keep
+  old=$(bash -c 'source "$1" 2>/dev/null; echo "${SAVED_CERTS:-${SAVED_DOMAIN:-}}"' _ "$STATE")
+  set -f
+  for c in $old; do
+    keep=0
+    [[ $c == "$CERT_MAIN" || $c == "$CERT_CDN" ]] && keep=1
+    (( keep )) && continue
+    ylw "  移除不再使用的旧证书：$c"
+    $ACME --remove -d "$c" --ecc >/dev/null 2>&1 || true
+    rm -rf "/root/.acme.sh/${c}_ecc"
+  done
+  set +f
+  rm -f "$SSL/fullchain.crt" "$SSL/private.key"   # 旧版的证书路径
 }
 
 # ------------------------------------------------------------------ Xray ----
@@ -456,8 +587,8 @@ install_hy2(){
   bash <(curl -fsSL https://get.hy2.sh/) >/dev/null
   id hysteria &>/dev/null || useradd -r -s /usr/sbin/nologin hysteria
   mkdir -p /etc/hysteria
-  install -m 640 -o root -g hysteria "$SSL/fullchain.crt" /etc/hysteria/cert.crt
-  install -m 640 -o root -g hysteria "$SSL/private.key"   /etc/hysteria/cert.key
+  install -m 640 -o root -g hysteria "$MAIN_DIR/fullchain.crt" /etc/hysteria/cert.crt
+  install -m 640 -o root -g hysteria "$MAIN_DIR/private.key"   /etc/hysteria/cert.key
   {
     cat <<EOF
 listen: :$HPORT
@@ -601,11 +732,13 @@ write_info(){
   grn "已保存到 $INFO（随时运行 sudo bash $0 info 查看）"
   echo
   ylw "还需要手动做的事："
-  ylw "  • VPS 商家 / 云控制台安全组放行：TCP 80、TCP $RPORT$( (( NO_HY2 )) || echo "、UDP $HPORT")${HOP:+、UDP $HOP}"
+  ylw "  • VPS 商家 / 云控制台安全组放行：TCP $RPORT$( (( NO_HY2 )) || echo "、UDP $HPORT")${HOP:+、UDP $HOP}$( (( HTTP01 )) && echo "、TCP 80（证书续期要用）" || echo "（TCP 80 可选，只用来跳转 https）")"
   ylw "  • Cloudflare：$DOMAIN 保持【灰色云朵】"
   if [[ -n $CDN ]]; then
-    ylw "  • Cloudflare：$CDN 改成【橙色云朵】，SSL/TLS 设为 Full (strict)，Network 里 WebSockets 保持开启"
+    ylw "  • Cloudflare：$CDN 保持【橙色云朵】，SSL/TLS 设为 Full (strict)，Network 里 WebSockets 保持开启"
   fi
+  (( HTTP01 )) || ylw "  • Cloudflare Token 已保存在 /root/.acme.sh/account.conf 供自动续期；卸载时会一并删除"
+
   ylw "  • 客户端务必开启国内直连分流（服务端屏蔽了 geoip:cn，回国流量会失败）"
 }
 
@@ -746,12 +879,18 @@ remove_self(){
   done
   rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE"
   if systemctl is-active --quiet nginx 2>/dev/null; then nginx -t -q 2>/dev/null && systemctl reload nginx || true; fi
-  local SAVED_DOMAIN=""
+  local SAVED_DOMAIN="" SAVED_CERTS="" c
   # shellcheck disable=SC1090
   [[ -f $STATE ]] && source "$STATE"
-  if [[ -n $SAVED_DOMAIN && -x /root/.acme.sh/acme.sh ]]; then
-    /root/.acme.sh/acme.sh --remove -d "$SAVED_DOMAIN" --ecc >/dev/null 2>&1 || true
-    rm -rf "/root/.acme.sh/${SAVED_DOMAIN}_ecc"
+  if [[ -x /root/.acme.sh/acme.sh ]]; then
+    set -f
+    for c in ${SAVED_CERTS:-$SAVED_DOMAIN}; do
+      /root/.acme.sh/acme.sh --remove -d "$c" --ecc >/dev/null 2>&1 || true
+      rm -rf "/root/.acme.sh/${c}_ecc"
+    done
+    set +f
+    # acme.sh 为续期保存的 Cloudflare Token
+    [[ -f /root/.acme.sh/account.conf ]] && sed -i '/^SAVED_CF_/d' /root/.acme.sh/account.conf
   fi
   rm -rf "$SSL" "$WEB" "$WORKDIR" "$XHTTP_SOCK" /etc/sysctl.d/99-proxy-node.conf /usr/local/bin/proxy-node-cert-reload
 }
@@ -868,6 +1007,7 @@ main(){
   preflight
   if [[ $CMD == uninstall ]]; then do_uninstall; exit 0; fi
   [[ -n $DOMAIN ]] || interactive
+  ask_token
   validate
   mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
   install_deps

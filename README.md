@@ -15,8 +15,17 @@ Personal utility scripts
 ### 准备
 
 1. 一个**主域名**：Cloudflare 灰色云朵，A 记录指向 VPS。Reality 和 Hysteria2 共用这个域名。
-2. （可选）一个 **CDN 域名**：先设为灰色云朵，部署完成后再改成橙色云朵，SSL 模式设为 Full (strict)。
-3. 在 VPS 商家的防火墙或安全组里放行 TCP 80、TCP 443、UDP 443，以及 UDP 20000-40000。
+2. （可选）一个 **CDN 域名**：Cloudflare **橙色云朵**，A 记录指向 VPS，SSL 模式设为 Full (strict)。从一开始就是橙云，不需要先改成灰云。
+3. 一个 **Cloudflare API Token**：在"我的个人资料 → API 令牌 → 创建令牌 → 自定义"里创建，权限给"区域 → 区域 → 读取"和"区域 → DNS → 编辑"，区域资源只选你的域名。
+4. 在 VPS 商家的防火墙或安全组里放行 TCP 443、UDP 443，以及 UDP 20000-40000。TCP 80 可选，只用来跳转到 https。
+
+证书用 DNS 验证申请**通配符证书**（例如 `*.example.com`）：
+
+- 证书透明度日志里只会出现通配符，看不到具体子域名。
+- 连到 VPS IP 的人看到的证书也只有通配符，看不出 CDN 域名托管在这台机器上。
+- Token 由 acme.sh 保存在 `/root/.acme.sh/account.conf`，用于自动续期；卸载时会一并删除。
+
+不用 Cloudflare 管理 DNS 时可以加 `--http01` 改用 80 端口验证，但证书会公开具体域名。
 
 ### 运行
 
@@ -32,7 +41,7 @@ sudo bash vps/node-setup.sh -d a.example.com -c cdn.example.com -e me@example.co
 sudo bash vps/node-setup.sh info
 ```
 
-第一条是交互式，按提示输入即可；第二条用参数一次传完，全部参数见 `--help`；第三条用来重新显示节点信息。
+第一条是交互式，按提示输入即可，Token 的输入不会显示在屏幕上。第二条用参数一次传完，Token 可以用环境变量 `CF_Token` 传入，全部参数见 `--help`。第三条用来重新显示节点信息。
 
 重复运行会沿用上次生成的 UUID、密钥和密码，客户端不用改。加 `--reset` 才会重新生成。
 
