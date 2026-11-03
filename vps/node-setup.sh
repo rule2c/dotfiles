@@ -13,6 +13,8 @@
 #    sudo bash node-setup.sh -d a.example.com -c cdn.example.com
 #    sudo bash node-setup.sh -d a.example.com -p 443 -u 443 --hop 20000-40000 -e me@example.com
 #    sudo bash node-setup.sh info                              # 重新显示节点信息
+#    sudo bash node-setup.sh uninstall                         # 卸载：列出本机所有代理（含其他脚本装的），选择卸载
+#    sudo bash node-setup.sh uninstall --all -y                # 卸载全部代理组件，不询问
 #
 #  参数：
 #    -d, --domain   主域名（必填）。Cloudflare 灰色云朵，A 记录指向本机。Reality 和 Hysteria2 共用
@@ -25,6 +27,8 @@
 #    -e, --email    申请证书用的邮箱，默认 admin@主域名
 #    -n, --name     节点名前缀，默认取主域名第一段
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
+#        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
+#    -y, --yes      （uninstall）不再确认
 #    环境变量 XRAY_VERSION=v26.x.x 可固定 Xray 版本，默认安装最新版
 # =============================================================================
 set -euo pipefail
@@ -45,15 +49,15 @@ grn(){ printf '\033[32m%s\033[0m\n' "$*"; }
 ylw(){ printf '\033[33m%s\033[0m\n' "$*"; }
 die(){ red "$*"; exit 1; }
 
-usage(){ sed -n '3,33s/^# \{0,1\}//p' "$0" 2>/dev/null || echo "用法：sudo bash node-setup.sh -d 主域名 [-c CDN域名] [-p 端口] [-u hy2端口] [--hop 范围]"; }
+usage(){ sed -n '3,37s/^# \{0,1\}//p' "$0" 2>/dev/null || echo "用法：sudo bash node-setup.sh -d 主域名 [-c CDN域名] [-p 端口] [-u hy2端口] [--hop 范围]"; }
 
 # ---------------------------------------------------------------- 参数 ----
-CMD=install DOMAIN="" CDN="" RPORT="" HPORT="" HOP="" EMAIL="" NODE="" OBFS=0 NO_HY2=0 RESET=0
+CMD=install DOMAIN="" CDN="" RPORT="" HPORT="" HOP="" EMAIL="" NODE="" OBFS=0 NO_HY2=0 RESET=0 ALL=0 YES=0
 
 parse_args(){
   while [[ $# -gt 0 ]]; do
     case $1 in
-      install|info) CMD=$1 ;;
+      install|info|uninstall) CMD=$1 ;;
       -d|--domain)   DOMAIN=${2:?缺少域名}; shift ;;
       -c|--cdn)      CDN=${2:?缺少 CDN 域名}; shift ;;
       -p|--port)     RPORT=${2:?缺少端口}; shift ;;
@@ -64,6 +68,8 @@ parse_args(){
       --obfs)        OBFS=1 ;;
       --no-hy2)      NO_HY2=1 ;;
       --reset)       RESET=1 ;;
+      --all)         ALL=1 ;;
+      -y|--yes)      YES=1 ;;
       -h|--help)     usage; exit 0 ;;
       *) red "未知参数：$1"; usage; exit 1 ;;
     esac
@@ -132,7 +138,6 @@ preflight(){
   grep -qiE '^ID(_LIKE)?=.*(debian|ubuntu)' /etc/os-release || die "只支持 Debian / Ubuntu"
   case $(uname -m) in x86_64|aarch64) ;; *) die "不支持的架构 $(uname -m)" ;; esac
   command -v systemctl >/dev/null || die "需要 systemd"
-  mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
 }
 
 install_deps(){
@@ -198,7 +203,8 @@ load_or_gen_state(){
   OBFS_PASS=${OBFS_PASS:-$(openssl rand -hex 16)}
   ( umask 077
     printf '%s=%q\n' UUID "$UUID" PRIV "$PRIV" PUB "$PUB" SID "$SID" XPATH "$XPATH" \
-      WSPATH "$WSPATH" HY_PASS "$HY_PASS" OBFS_PASS "$OBFS_PASS" > "$STATE" )
+      WSPATH "$WSPATH" HY_PASS "$HY_PASS" OBFS_PASS "$OBFS_PASS" \
+      SAVED_DOMAIN "$DOMAIN" SAVED_CDN "$CDN" > "$STATE" )
 }
 
 # ------------------------------------------------------------ nginx 站点 ----
@@ -587,6 +593,256 @@ write_info(){
   ylw "  • 客户端务必开启国内直连分流（服务端屏蔽了 geoip:cn，回国流量会失败）"
 }
 
+# ================================================================== 卸载 ====
+# 不只卸载本脚本装的东西，也能清理其他一键脚本 / 面板装的代理，避免端口冲突、残留进程。
+# 组件表：名称|systemd 单元（可带 *）|进程名|文件和目录
+PROXY_COMPONENTS=(
+"Xray|xray.service xray@*.service|xray|/usr/local/bin/xray /usr/bin/xray /usr/local/etc/xray /usr/local/share/xray /etc/xray /var/log/xray /etc/systemd/system/xray.service.d /etc/systemd/system/xray@.service.d"
+"V2Ray|v2ray.service v2ray@*.service|v2ray|/usr/local/bin/v2ray /usr/bin/v2ray /usr/local/etc/v2ray /usr/local/share/v2ray /etc/v2ray /var/log/v2ray /etc/systemd/system/v2ray.service.d /etc/systemd/system/v2ray@.service.d"
+"sing-box|sing-box.service sing-box@*.service sb.service|sing-box|/usr/local/bin/sing-box /usr/bin/sing-box /etc/sing-box /usr/local/etc/sing-box /var/lib/sing-box /var/log/sing-box /etc/s-box /root/agsb /root/agsbx"
+"Hysteria / Hysteria2|hysteria-server.service hysteria-server@*.service hysteria.service hysteria2.service hy2.service|hysteria|/usr/local/bin/hysteria /usr/bin/hysteria /etc/hysteria /var/log/hysteria /root/hy"
+"TUIC|tuic.service tuic-server.service tuic@*.service|tuic-server tuic|/usr/local/bin/tuic /usr/local/bin/tuic-server /etc/tuic /opt/tuic /root/tuic"
+"Trojan / Trojan-Go|trojan.service trojan-go.service trojan-go@*.service|trojan trojan-go|/usr/local/bin/trojan /usr/local/bin/trojan-go /usr/local/etc/trojan /etc/trojan /etc/trojan-go /usr/share/trojan-go"
+"Shadowsocks|shadowsocks-libev.service shadowsocks-libev-server@*.service shadowsocks-rust.service ss-server.service ssserver.service shadowsocks.service|ss-server ssserver|/usr/local/bin/ssserver /usr/local/bin/ss-server /etc/shadowsocks-libev /etc/shadowsocks-rust /etc/shadowsocks"
+"x-ui / 3x-ui 面板|x-ui.service|x-ui|/usr/local/x-ui /etc/x-ui /usr/bin/x-ui"
+"s-ui 面板|s-ui.service|s-ui sui|/usr/local/s-ui /usr/bin/s-ui"
+"h-ui 面板|h-ui.service|h-ui|/usr/local/h-ui /usr/bin/h-ui"
+"v2ray-agent 八合一脚本|||/etc/v2ray-agent /usr/bin/vasma /usr/sbin/vasma"
+"Juicity|juicity-server.service|juicity-server|/usr/local/bin/juicity-server /etc/juicity"
+"NaiveProxy|naive.service naiveproxy.service|naive|/usr/local/bin/naive /etc/naive /etc/naiveproxy"
+"gost|gost.service|gost|/usr/local/bin/gost /usr/bin/gost /etc/gost"
+"Brook|brook.service|brook|/usr/local/bin/brook /usr/bin/brook"
+"mihomo / Clash|mihomo.service clash.service clash-meta.service|mihomo clash clash-meta|/usr/local/bin/mihomo /usr/local/bin/clash /etc/mihomo /etc/clash"
+)
+# 这些可能另有用途，"全部"不会选中，需要单独选
+EXTRA_COMPONENTS=(
+"Caddy（常做 NaiveProxy / Trojan 前置，也可能是网站）|caddy.service|caddy|/usr/bin/caddy /usr/local/bin/caddy /etc/caddy"
+"cloudflared / Argo 隧道|cloudflared.service argo.service|cloudflared|/usr/local/bin/cloudflared /usr/bin/cloudflared /etc/cloudflared /etc/argox /etc/argo"
+)
+DOCKER_RE='xray|v2ray|v2fly|sing-?box|hysteria|tuic|trojan|shadowsocks|ss-?rust|x-ui|3x-ui|s-ui|h-ui|naive|juicity|gost|brook|mihomo|clash'
+
+C_TYPE=() C_NAME=() C_DATA=() C_DESC=() C_INALL=()
+add_comp(){ C_TYPE+=("$1"); C_NAME+=("$2"); C_DATA+=("$3"); C_DESC+=("$4"); C_INALL+=("$5"); }
+
+# 列出匹配的 systemd 单元（单元文件 + 已加载的实例）
+find_units(){
+  local pat
+  for pat in "$@"; do
+    systemctl list-unit-files --no-legend "$pat" 2>/dev/null | awk '{print $1}'
+    systemctl list-units --all --no-legend --plain "$pat" 2>/dev/null | awk '{print $1}'
+  done | grep -v '^$' | sort -u || true
+}
+
+detect_table_comp(){ # $1=表项 $2=是否计入全部
+  local name units procs paths u p desc="" running=0
+  IFS='|' read -r name units procs paths <<<"$1"
+  local -a ua pa fa found_u=() found_p=() found_f=()
+  read -ra ua <<<"$units"; read -ra pa <<<"$procs"; read -ra fa <<<"$paths"
+  while read -r u; do [[ -n $u ]] && found_u+=("$u"); done < <(find_units "${ua[@]}")
+  for u in "${found_u[@]}"; do systemctl is-active --quiet "$u" 2>/dev/null && running=1; done
+  for p in "${pa[@]}"; do pgrep -x "$p" >/dev/null 2>&1 && { found_p+=("$p"); running=1; }; done
+  for p in "${fa[@]}"; do [[ -e $p || -L $p ]] && found_f+=("$p"); done
+  (( ${#found_u[@]} + ${#found_p[@]} + ${#found_f[@]} )) || return 0
+  (( running )) && desc="[运行中] "
+  (( ${#found_u[@]} )) && desc+="服务: ${found_u[*]}  "
+  (( ${#found_p[@]} )) && desc+="进程: ${found_p[*]}  "
+  (( ${#found_f[@]} )) && desc+="文件: ${found_f[*]}"
+  add_comp table "$name" "$1" "$desc" "$2"
+}
+
+detect_all(){
+  local e line
+  if [[ -e /usr/local/sbin/proxy-node-fw || -e $NGX_SITE || -d $WORKDIR ]]; then
+    add_comp self "本脚本的附加配置" "" "nginx 站点、防火墙/端口跳跃、证书、凭据（$WORKDIR）" 1
+  fi
+  for e in "${PROXY_COMPONENTS[@]}"; do detect_table_comp "$e" 1; done
+  for e in "${EXTRA_COMPONENTS[@]}"; do detect_table_comp "$e" 0; done
+  if command -v docker >/dev/null 2>&1; then
+    while read -r line; do
+      [[ -n $line ]] || continue
+      add_comp docker "Docker 容器 ${line#* }" "${line%% *}" "" 1
+    done < <(docker ps -a --format '{{.ID}} {{.Names}} ({{.Image}})' 2>/dev/null | grep -iE "$DOCKER_RE" || true)
+  fi
+  # 其他脚本留下的 UDP 端口跳跃 NAT 规则（本脚本的 HY2_HOP 归入"本脚本的附加配置"）
+  local ipt n
+  for ipt in iptables ip6tables; do
+    command -v $ipt >/dev/null 2>&1 || continue
+    n=$($ipt -t nat -S PREROUTING 2>/dev/null | grep -E '^-A PREROUTING .*-p udp.*-j (REDIRECT|DNAT)' | grep -vc HY2_HOP || true)
+    (( n > 0 )) && add_comp nat "$ipt UDP 端口转发规则（多为其他脚本的端口跳跃）" "$ipt" "$n 条" 1
+  done
+  dpkg -s nginx >/dev/null 2>&1 && add_comp pkg "nginx 软件包" "nginx nginx-common nginx-core nginx-full nginx-light" "如果本机还有其他网站不要选" 0
+  [[ -d /root/.acme.sh ]] && add_comp acme "acme.sh 及其全部证书" "" "/root/.acme.sh" 0
+  return 0
+}
+
+REMOVED_PATHS=()
+
+rm_path(){ # 软件包的文件交给 apt，其余直接删
+  local p=$1 pkg
+  [[ -e $p || -L $p ]] || return 0
+  if pkg=$(dpkg -S "$p" 2>/dev/null | head -1 | cut -d: -f1) && [[ -n $pkg ]]; then
+    PURGE_PKGS+=("$pkg")
+  else
+    rm -rf -- "$p"; REMOVED_PATHS+=("$p")
+  fi
+}
+
+remove_table_comp(){
+  local name units procs paths u p frag
+  IFS='|' read -r name units procs paths <<<"$1"
+  local -a ua pa fa
+  read -ra ua <<<"$units"; read -ra pa <<<"$procs"; read -ra fa <<<"$paths"
+  ylw "卸载 $name"
+  local d tmpl
+  while read -r u; do
+    [[ -n $u ]] || continue
+    frag=$(systemctl show -p FragmentPath --value "$u" 2>/dev/null || true)
+    systemctl disable --now "$u" >/dev/null 2>&1 || true
+    [[ -n $frag ]] && rm_path "$frag"
+    # 实例 xray@a.service 对应模板 xray@.service；systemd 没给出路径时也到标准目录里找
+    tmpl=$(sed -E 's/@[^.]+\./@./' <<<"$u")
+    for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system /usr/local/lib/systemd/system; do
+      rm_path "$d/$u"; rm_path "$d/$tmpl"
+    done
+    rm -rf "/etc/systemd/system/$u.d" "/etc/systemd/system/$tmpl.d"
+  done < <(find_units "${ua[@]}")
+  for p in "${pa[@]}"; do pkill -x "$p" 2>/dev/null || true; done
+  for p in "${pa[@]}"; do   # 2 秒内没退出就强杀
+    for _ in 1 2 3 4; do pgrep -x "$p" >/dev/null || break; sleep 0.5; done
+    pkill -9 -x "$p" 2>/dev/null || true
+  done
+  for p in "${fa[@]}"; do rm_path "$p"; done
+  for p in "${pa[@]}"; do   # 删除这些程序专用的系统用户（如 hysteria）
+    if getent passwd "$p" >/dev/null && (( $(id -u "$p") < 1000 )); then userdel "$p" 2>/dev/null || true; fi
+  done
+}
+
+remove_self(){
+  ylw "卸载本脚本的附加配置"
+  systemctl disable --now proxy-node-fw >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/proxy-node-fw.service /usr/local/sbin/proxy-node-fw
+  local ipt
+  for ipt in iptables ip6tables; do
+    command -v $ipt >/dev/null 2>&1 || continue
+    while $ipt -t nat -D PREROUTING -p udp -j HY2_HOP 2>/dev/null; do :; done
+    $ipt -t nat -F HY2_HOP 2>/dev/null || true
+    $ipt -t nat -X HY2_HOP 2>/dev/null || true
+  done
+  rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE"
+  if systemctl is-active --quiet nginx 2>/dev/null; then nginx -t -q 2>/dev/null && systemctl reload nginx || true; fi
+  local SAVED_DOMAIN=""
+  # shellcheck disable=SC1090
+  [[ -f $STATE ]] && source "$STATE"
+  if [[ -n $SAVED_DOMAIN && -x /root/.acme.sh/acme.sh ]]; then
+    /root/.acme.sh/acme.sh --remove -d "$SAVED_DOMAIN" --ecc >/dev/null 2>&1 || true
+    rm -rf "/root/.acme.sh/${SAVED_DOMAIN}_ecc"
+  fi
+  rm -rf "$SSL" "$WEB" "$WORKDIR" "$XHTTP_SOCK" /etc/sysctl.d/99-proxy-node.conf /usr/local/bin/proxy-node-cert-reload
+}
+
+remove_nat(){
+  local ipt=$1 line
+  local -a args
+  ylw "删除 $ipt UDP 端口转发规则"
+  while read -r line; do
+    [[ -n $line ]] || continue
+    read -ra args <<<"${line#-A PREROUTING }"
+    $ipt -t nat -D PREROUTING "${args[@]}" 2>/dev/null || red "  删除失败：$line"
+  done < <($ipt -t nat -S PREROUTING 2>/dev/null | grep -E '^-A PREROUTING .*-p udp.*-j (REDIRECT|DNAT)' | grep -v HY2_HOP || true)
+  ylw "  如果规则是开机脚本加的（rc.local、/etc/iptables/rules.v*、nftables.conf），重启后可能恢复，需要一并清理"
+}
+
+cleanup_leftovers(){
+  local d l t p c new
+  # 指向已删除目录的快捷命令（如 /usr/local/bin/sb、/usr/bin/x-ui）
+  for d in /usr/local/bin /usr/bin /usr/sbin /usr/local/sbin; do
+    for l in "$d"/*; do
+      [[ -L $l && ! -e $l ]] || continue
+      t=$(readlink "$l")
+      for p in "${REMOVED_PATHS[@]}"; do [[ $t == "$p"* ]] && { rm -f "$l"; break; }; done
+    done
+  done
+  # root crontab 里引用已删除路径的行（@reboot 启动、证书续期等）
+  if (( ${#REMOVED_PATHS[@]} )) && c=$(crontab -l 2>/dev/null); then
+    new=$c
+    for p in "${REMOVED_PATHS[@]}"; do new=$(grep -vF -- "$p" <<<"$new" || true); done
+    if [[ $new != "$c" ]]; then
+      ylw "从 crontab 删除以下行："; diff <(echo "$c") <(echo "$new") | grep '^<' || true
+      if [[ -n $new ]]; then echo "$new" | crontab -; else crontab -r; fi
+    fi
+  fi
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl reset-failed 2>/dev/null || true
+}
+
+do_uninstall(){
+  detect_all
+  if (( ${#C_NAME[@]} == 0 )); then grn "没有检测到代理组件。"; return; fi
+  echo; grn "检测到以下组件："
+  local i
+  for i in "${!C_NAME[@]}"; do
+    printf '  %2d) %s%s\n' $((i+1)) "${C_NAME[$i]}" "$( (( C_INALL[i] )) || echo '  ⚠ 需单独选')"
+    [[ -n ${C_DESC[$i]} ]] && printf '      %s\n' "${C_DESC[$i]}"
+  done
+  echo; ylw "当前监听的端口（不含 sshd）："
+  ss -tulnpH 2>/dev/null | grep -v '"sshd"' | awk '{printf "    %-4s %-28s %s\n",$1,$5,$7}' || true
+  echo
+
+  local -a pick=()
+  if (( ALL )); then
+    for i in "${!C_NAME[@]}"; do (( C_INALL[i] )) && pick+=("$i"); done
+  else
+    [[ -t 0 ]] || { ylw "非交互环境：加 --all -y 卸载全部代理组件"; return; }
+    local ans n
+    read -rp "输入要卸载的编号（空格分隔，a=全部代理组件，回车取消）: " ans || true
+    [[ -n $ans ]] || { ylw "已取消"; return; }
+    if [[ $ans == a || $ans == A ]]; then
+      for i in "${!C_NAME[@]}"; do (( C_INALL[i] )) && pick+=("$i"); done
+    else
+      for n in $ans; do
+        [[ $n =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#C_NAME[@]} )) || die "编号不对：$n"
+        pick+=("$((n-1))")
+      done
+    fi
+  fi
+  (( ${#pick[@]} )) || { ylw "没有选中任何组件"; return; }
+
+  echo; red "将要卸载："
+  for i in "${pick[@]}"; do red "  - ${C_NAME[$i]}"; done
+  if (( ! YES )); then
+    [[ -t 0 ]] || die "非交互环境请加 -y 确认"
+    local yn; read -rp "确认卸载？此操作不可恢复 (y/N): " yn || true
+    [[ $yn =~ ^[Yy] ]] || { ylw "已取消"; return; }
+  fi
+
+  PURGE_PKGS=()
+  for i in "${pick[@]}"; do
+    case ${C_TYPE[$i]} in
+      self)   remove_self ;;
+      table)  remove_table_comp "${C_DATA[$i]}" ;;
+      docker) ylw "删除 ${C_NAME[$i]}"; docker rm -f "${C_DATA[$i]}" >/dev/null || red "  删除失败" ;;
+      nat)    remove_nat "${C_DATA[$i]}" ;;
+      pkg)    read -ra _p <<<"${C_DATA[$i]}"; PURGE_PKGS+=("${_p[@]}") ;;
+      acme)   ylw "卸载 acme.sh"; /root/.acme.sh/acme.sh --uninstall >/dev/null 2>&1 || true
+              rm -rf /root/.acme.sh; REMOVED_PATHS+=(/root/.acme.sh) ;;
+    esac
+  done
+  if (( ${#PURGE_PKGS[@]} )); then
+    local -a installed=()
+    for i in $(printf '%s\n' "${PURGE_PKGS[@]}" | sort -u); do dpkg -s "$i" >/dev/null 2>&1 && installed+=("$i"); done
+    if (( ${#installed[@]} )); then
+      ylw "用 apt 卸载软件包：${installed[*]}"
+      DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq "${installed[@]}" >/dev/null || red "  apt 卸载失败"
+      DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq >/dev/null 2>&1 || true
+    fi
+  fi
+  cleanup_leftovers
+
+  echo; grn "卸载完成。还在监听的端口（不含 sshd）："
+  ss -tulnpH 2>/dev/null | grep -v '"sshd"' | awk '{printf "    %-4s %-28s %s\n",$1,$5,$7}' || true
+  ylw "说明：iptables INPUT 放行规则没有删除（重启后不会再加回）；云控制台安全组请按需自行关闭。"
+}
+
 main(){
   parse_args "$@"
   if [[ $CMD == info ]]; then
@@ -594,8 +850,10 @@ main(){
     exit 0
   fi
   preflight
+  if [[ $CMD == uninstall ]]; then do_uninstall; exit 0; fi
   [[ -n $DOMAIN ]] || interactive
   validate
+  mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
   install_deps
   check_dns
   check_ports

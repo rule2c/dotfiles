@@ -35,3 +35,33 @@ sudo bash vps/node-setup.sh info
 第一条是交互式，按提示输入即可；第二条用参数一次传完，全部参数见 `--help`；第三条用来重新显示节点信息。
 
 重复运行会沿用上次生成的 UUID、密钥和密码，客户端不用改。加 `--reset` 才会重新生成。
+
+### 卸载（包括其他脚本装的代理）
+
+```bash
+sudo bash vps/node-setup.sh uninstall
+```
+
+```bash
+sudo bash vps/node-setup.sh uninstall --all -y
+```
+
+第一条列出检测到的组件，按编号选择要卸载的。第二条卸载全部代理组件，不再确认。
+
+能检测的组件：
+
+- **代理程序：** Xray、V2Ray、sing-box（含甬哥脚本）、Hysteria/Hysteria2、TUIC、Trojan/Trojan-Go、Shadowsocks、Juicity、NaiveProxy、gost、Brook、mihomo/Clash
+- **面板和一键脚本：** x-ui/3x-ui、s-ui、h-ui、v2ray-agent 八合一
+- **Docker：** 名字或镜像像代理的容器
+- **端口跳跃：** 其他脚本留下的 UDP 端口跳跃 NAT 规则
+- **本脚本的附加配置**
+
+对每个选中的组件，卸载会做这些事：
+
+- 停止并禁用对应的服务，删除 unit 文件
+- 结束残留进程
+- 删除程序和配置目录。属于 apt 软件包的文件改用 `apt purge` 卸载
+- 清理指向已删目录的快捷命令，例如 `/usr/bin/x-ui`、`sb`
+- 删除 root crontab 里引用了这些路径的行
+
+nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会包含，需要按编号单独选。SSH 和防火墙的放行规则不会改动。
