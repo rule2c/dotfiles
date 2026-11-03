@@ -33,9 +33,10 @@
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
 #    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
-#    环境变量 XRAY_VERSION=v26.x.x 可固定 Xray 版本，默认安装最新版
+#    Xray 默认固定为 v26.9.9；环境变量 XRAY_VERSION=v26.x.x 可换成别的版本，XRAY_VERSION=latest 安装最新版
 # =============================================================================
 set -Eeuo pipefail
+XRAY_DEFAULT_VERSION=v26.9.9   # 已用这个版本测过全部线路
 # 任何一步失败都打印位置，不再静默退出
 trap 'rc=$?; printf "\033[31m脚本出错退出：第 %s 行，命令：%s（退出码 %s）\033[0m\n" "$LINENO" "$BASH_COMMAND" "$rc" >&2; exit $rc' ERR
 
@@ -606,15 +607,21 @@ prune_old_certs(){
 
 # ------------------------------------------------------------------ Xray ----
 install_xray(){
-  grn "[4/9] 安装 Xray ${XRAY_VERSION:-（最新版）}"
+  local want=${XRAY_VERSION:-$XRAY_DEFAULT_VERSION}
+  [[ $want == latest || $want == v* ]] || want=v$want          # 允许写 26.9.9
+  grn "[4/9] 安装 Xray $( [[ $want == latest ]] && echo "（最新版）" || echo "$want")"
   local url=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
-  if [[ -n ${XRAY_VERSION:-} ]]; then
-    bash -c "$(curl -fsSL $url)" @ install --version "$XRAY_VERSION" >/dev/null
-  else
+  if [[ $want == latest ]]; then
     bash -c "$(curl -fsSL $url)" @ install >/dev/null
+  else
+    bash -c "$(curl -fsSL $url)" @ install --version "$want" >/dev/null \
+      || die "Xray $want 安装失败（版本号是否存在？见 https://github.com/XTLS/Xray-core/releases）"
   fi
   local v; v=$(/usr/local/bin/xray version 2>&1) || die "Xray 安装失败：$v"
   echo "  ${v%%$'\n'*}"
+  if [[ $want != latest && ${v%%$'\n'*} != "Xray ${want#v} "* ]]; then
+    die "装上的 Xray 版本不是 $want：${v%%$'\n'*}"
+  fi
 }
 
 write_xray(){
