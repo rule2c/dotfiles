@@ -820,13 +820,13 @@ write_info(){
   {
     echo "===== Clash / mihomo（放到 proxies: 下）====="
     echo "  - {name: $NODE-reality, type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: $SID}}"
-    (( NO_HY2 )) || echo "  - {name: $NODE-hy2, type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
+    (( NO_HY2 )) || echo "  - {name: $NODE-hysteria2, type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
     [[ -n $CDN ]] && echo "  - {name: $NODE-cdn-ws, type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
     echo "===== 分享链接（v2rayN / NekoBox / Shadowrocket 等）====="
     echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&type=tcp&flow=xtls-rprx-vision#$NODE-reality"
     echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&type=xhttp&path=%2F$XPATH&mode=auto#$NODE-reality-xhttp"
-    (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$NODE-hy2"
+    (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$NODE-hysteria2"
     if [[ -n $CDN ]]; then
       echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$NODE-cdn-xhttp"
       echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=ws&host=$CDN&path=%2F$WSPATH#$NODE-cdn-ws"
