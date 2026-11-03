@@ -32,7 +32,7 @@
 #    -n, --name     节点名前缀，默认取主域名第一段
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
-#    -y, --yes      （uninstall）不再确认
+#    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
 #    环境变量 XRAY_VERSION=v26.x.x 可固定 Xray 版本，默认安装最新版
 # =============================================================================
 set -euo pipefail
@@ -899,6 +899,7 @@ detect_table_comp(){ # $1=表项 $2=是否计入全部
 }
 
 detect_all(){
+  C_TYPE=() C_NAME=() C_DATA=() C_DESC=() C_INALL=()
   local e line
   if [[ -e /usr/local/sbin/proxy-node-fw || -e $NGX_SITE || -d $WORKDIR ]]; then
     add_comp self "本脚本的附加配置" "" "nginx 站点、防火墙/端口跳跃、证书、凭据（$WORKDIR）" 1
@@ -1029,10 +1030,7 @@ cleanup_leftovers(){
   systemctl reset-failed 2>/dev/null || true
 }
 
-do_uninstall(){
-  detect_all
-  if (( ${#C_NAME[@]} == 0 )); then grn "没有检测到代理组件。"; return; fi
-  echo; grn "检测到以下组件："
+show_components(){
   local i
   for i in "${!C_NAME[@]}"; do
     printf '  %2d) %s%s\n' $((i+1)) "${C_NAME[$i]}" "$( (( C_INALL[i] )) || echo '  ⚠ 需单独选')"
@@ -1041,6 +1039,82 @@ do_uninstall(){
   echo; ylw "当前监听的端口（不含 sshd）："
   ss -tulnpH 2>/dev/null | grep -v '"sshd"' | awk '{printf "    %-4s %-28s %s\n",$1,$5,$7}' || true
   echo
+}
+
+remove_components(){ # remove_components 下标...
+  local i
+  PURGE_PKGS=()
+  for i in "$@"; do
+    case ${C_TYPE[$i]} in
+      self)   remove_self ;;
+      table)  remove_table_comp "${C_DATA[$i]}" ;;
+      docker) ylw "删除 ${C_NAME[$i]}"; docker rm -f "${C_DATA[$i]}" >/dev/null || red "  删除失败" ;;
+      nat)    remove_nat "${C_DATA[$i]}" ;;
+      pkg)    read -ra _p <<<"${C_DATA[$i]}"; PURGE_PKGS+=("${_p[@]}") ;;
+      acme)   ylw "卸载 acme.sh"; /root/.acme.sh/acme.sh --uninstall >/dev/null 2>&1 || true
+              rm -rf /root/.acme.sh; REMOVED_PATHS+=(/root/.acme.sh) ;;
+    esac
+  done
+  if (( ${#PURGE_PKGS[@]} )); then
+    local -a installed=()
+    for i in $(printf '%s\n' "${PURGE_PKGS[@]}" | sort -u); do dpkg -s "$i" >/dev/null 2>&1 && installed+=("$i"); done
+    if (( ${#installed[@]} )); then
+      ylw "用 apt 卸载软件包：${installed[*]}"
+      DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq "${installed[@]}" >/dev/null || red "  apt 卸载失败"
+      DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq >/dev/null 2>&1 || true
+    fi
+  fi
+  cleanup_leftovers
+}
+
+# 部署前：列出其他脚本 / 面板装的代理，默认全部卸载，避免端口、服务、配置互相打架
+# 本脚本以前部署过（有 state.env）时，Xray / Hysteria2 是自己的，会被原地更新，不列出
+preinstall_cleanup(){
+  grn "[检查] 已安装的其他代理"
+  detect_all
+  local i ours=0
+  local -a cand=() pick=()
+  [[ -f $STATE ]] && ours=1
+  for i in "${!C_NAME[@]}"; do
+    [[ ${C_TYPE[$i]} == self ]] && continue
+    if (( ours )) && [[ ${C_NAME[$i]} == Xray || ${C_NAME[$i]} == "Hysteria / Hysteria2" ]]; then continue; fi
+    cand+=("$i")
+  done
+  if (( ${#cand[@]} == 0 )); then grn "  没有发现"; return 0; fi
+
+  ylw "  发现以下已安装的代理组件，部署前建议卸载（否则可能抢端口、服务冲突、残留配置生效）："
+  for i in "${cand[@]}"; do
+    printf '    %2d) %s%s\n' $((i+1)) "${C_NAME[$i]}" "$( (( C_INALL[i] )) || echo '  ⚠ 可能另有用途，需单独选')"
+    [[ -n ${C_DESC[$i]} ]] && printf '        %s\n' "${C_DESC[$i]}"
+  done
+  local ans n
+  if (( YES )) || [[ ! -t 0 ]]; then
+    ans=a
+    (( YES )) || { ylw "  非交互环境：只卸载不带 ⚠ 的组件（加 -y 可跳过这个提示）"; }
+  else
+    read -rp "  卸载哪些？编号空格分隔，a=全部不带 ⚠ 的（默认），n=都不卸载: " ans || true
+    ans=${ans:-a}
+  fi
+  case $ans in
+    n|N) ylw "  跳过清理，继续部署"; return 0 ;;
+    a|A) for i in "${cand[@]}"; do (( C_INALL[i] )) && pick+=("$i"); done ;;
+    *)   for n in $ans; do
+           [[ $n =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#C_NAME[@]} )) || die "编号不对：$n"
+           [[ " ${cand[*]} " == *" $((n-1)) "* ]] || die "编号不在列表里：$n"
+           pick+=("$((n-1))")
+         done ;;
+  esac
+  (( ${#pick[@]} )) || { ylw "  没有要卸载的"; return 0; }
+  remove_components "${pick[@]}"
+  grn "  清理完成"
+}
+
+do_uninstall(){
+  detect_all
+  if (( ${#C_NAME[@]} == 0 )); then grn "没有检测到代理组件。"; return; fi
+  echo; grn "检测到以下组件："
+  show_components
+  local i
 
   local -a pick=()
   if (( ALL )); then
@@ -1069,28 +1143,7 @@ do_uninstall(){
     [[ $yn =~ ^[Yy] ]] || { ylw "已取消"; return; }
   fi
 
-  PURGE_PKGS=()
-  for i in "${pick[@]}"; do
-    case ${C_TYPE[$i]} in
-      self)   remove_self ;;
-      table)  remove_table_comp "${C_DATA[$i]}" ;;
-      docker) ylw "删除 ${C_NAME[$i]}"; docker rm -f "${C_DATA[$i]}" >/dev/null || red "  删除失败" ;;
-      nat)    remove_nat "${C_DATA[$i]}" ;;
-      pkg)    read -ra _p <<<"${C_DATA[$i]}"; PURGE_PKGS+=("${_p[@]}") ;;
-      acme)   ylw "卸载 acme.sh"; /root/.acme.sh/acme.sh --uninstall >/dev/null 2>&1 || true
-              rm -rf /root/.acme.sh; REMOVED_PATHS+=(/root/.acme.sh) ;;
-    esac
-  done
-  if (( ${#PURGE_PKGS[@]} )); then
-    local -a installed=()
-    for i in $(printf '%s\n' "${PURGE_PKGS[@]}" | sort -u); do dpkg -s "$i" >/dev/null 2>&1 && installed+=("$i"); done
-    if (( ${#installed[@]} )); then
-      ylw "用 apt 卸载软件包：${installed[*]}"
-      DEBIAN_FRONTEND=noninteractive apt-get purge -y -qq "${installed[@]}" >/dev/null || red "  apt 卸载失败"
-      DEBIAN_FRONTEND=noninteractive apt-get autoremove -y -qq >/dev/null 2>&1 || true
-    fi
-  fi
-  cleanup_leftovers
+  remove_components "${pick[@]}"
 
   echo; grn "卸载完成。还在监听的端口（不含 sshd）："
   ss -tulnpH 2>/dev/null | grep -v '"sshd"' | awk '{printf "    %-4s %-28s %s\n",$1,$5,$7}' || true
@@ -1111,6 +1164,7 @@ main(){
   mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
   install_deps
   check_dns
+  preinstall_cleanup
   fix_conflicts
   check_ports
   setup_site_http
