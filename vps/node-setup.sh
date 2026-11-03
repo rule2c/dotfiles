@@ -296,14 +296,30 @@ server {
     server_name $CDN;
 $common
 
+    # 以下 XHTTP 反代参数取自 Xray-core discussions #4118（XHTTP 五合一配置）
+    http2_max_concurrent_streams 1024;
+    http2_body_preread_size      128k;
+    keepalive_timeout            600s;
+    keepalive_requests           2048;
+    client_body_buffer_size      1m;
+    client_body_timeout          600s;
+    client_header_timeout        300s;
+    large_client_header_buffers  8 16k;
+
+    # 用 grpc_pass（RPRX #4113："Nginx 推荐 grpc_pass"）；实测 h2 直连和 HTTP/1.1 回源下
+    # packet-up / stream-up / stream-one 都通，proxy_pass 只有 packet-up 能通
     location /$XPATH {
-        client_max_body_size 0;
+        client_max_body_size     0;
+        grpc_buffer_size         16k;
+        grpc_socket_keepalive    on;
+        grpc_read_timeout        1h;
+        grpc_send_timeout        1h;
+        grpc_set_header Connection         "";
+        grpc_set_header X-Real-IP          \$remote_addr;
+        grpc_set_header X-Forwarded-For    \$proxy_add_x_forwarded_for;
+        grpc_set_header X-Forwarded-Proto  \$scheme;
+        grpc_set_header Host               \$host;
         grpc_pass unix:$XHTTP_SOCK;
-        grpc_socket_keepalive on;
-        grpc_read_timeout 1h;
-        grpc_send_timeout 1h;
-        grpc_set_header Connection "";
-        grpc_set_header X-Real-IP \$remote_addr;
     }
 
     location /$WSPATH {
