@@ -35,7 +35,9 @@
 #    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
 #    环境变量 XRAY_VERSION=v26.x.x 可固定 Xray 版本，默认安装最新版
 # =============================================================================
-set -euo pipefail
+set -Eeuo pipefail
+# 任何一步失败都打印位置，不再静默退出
+trap 'rc=$?; printf "\033[31m脚本出错退出：第 %s 行，命令：%s（退出码 %s）\033[0m\n" "$LINENO" "$BASH_COMMAND" "$rc" >&2; exit $rc' ERR
 
 WORKDIR=/root/proxy-node
 STATE=$WORKDIR/state.env
@@ -151,7 +153,7 @@ validate(){
 # ---------------------------------------------------------------- 工具 ----
 public_ip(){ curl -4 -s --max-time 5 https://api.ipify.org || curl -4 -s --max-time 5 https://ifconfig.me || true; }
 has_v6(){ [[ -s /proc/net/if_inet6 ]]; }
-ver_ge(){ printf '%s\n%s\n' "$2" "$1" | sort -V | head -1 | grep -qx "$2"; }   # ver_ge 当前 要求
+ver_ge(){ [[ $(printf '%s\n%s\n' "$2" "$1" | sort -V | sed -n 1p) == "$2" ]]; }   # ver_ge 当前 要求
 
 preflight(){
   [[ $EUID -eq 0 ]] || die "请用 root 或 sudo 运行"
@@ -417,7 +419,7 @@ EOF
   (( with_tls )) || return 0
 
   local ngv h2l="" h2d="" altsvc=""
-  ngv=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  ngv=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p)
   # nginx >= 1.25.1 用 "http2 on;"，旧版本用 listen ... http2
   if ver_ge "$ngv" 1.25.1; then h2d="http2 on;"; else h2l=" http2"; fi
   # 浏览器看到 Alt-Svc 会去连 UDP 443，那里是 Hysteria2 的伪装站，前后一致
@@ -612,7 +614,8 @@ install_xray(){
   else
     bash -c "$(curl -fsSL $url)" @ install >/dev/null
   fi
-  /usr/local/bin/xray version | head -1
+  local v; v=$(/usr/local/bin/xray version 2>&1) || die "Xray 安装失败：$v"
+  echo "  ${v%%$'\n'*}"
 }
 
 write_xray(){
@@ -933,7 +936,7 @@ REMOVED_PATHS=()
 rm_path(){ # 软件包的文件交给 apt，其余直接删
   local p=$1 pkg
   [[ -e $p || -L $p ]] || return 0
-  if pkg=$(dpkg -S "$p" 2>/dev/null | head -1 | cut -d: -f1) && [[ -n $pkg ]]; then
+  if pkg=$(dpkg -S "$p" 2>/dev/null | sed -n '1s/:.*//p') && [[ -n $pkg ]]; then
     PURGE_PKGS+=("$pkg")
   else
     rm -rf -- "$p"; REMOVED_PATHS+=("$p")
