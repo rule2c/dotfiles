@@ -826,7 +826,8 @@ write_info(){
 
   {
     echo "===== Clash / mihomo（放到 proxies: 下）====="
-    echo "  - {name: $NODE-reality, type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: $SID}}"
+    echo "  - {name: $NODE-reality, type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
+    echo "  - {name: $NODE-reality-xhttp, type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $DOMAIN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
     (( NO_HY2 )) || echo "  - {name: $NODE-hysteria2, type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
     [[ -n $CDN ]] && echo "  - {name: $NODE-cdn-ws, type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
@@ -851,6 +852,8 @@ write_info(){
   fi
   (( HTTP01 )) || ylw "  • Cloudflare Token 已保存在 /root/.acme.sh/account.conf 供自动续期；卸载时会一并删除"
 
+  ylw "  • Clash / mihomo 用分享链接导入 Reality 节点时，要在 reality-opts 里手动加 support-x25519mlkem768: true，"
+  ylw "    否则 Xray v26.9.9+ 会拒绝握手（日志：REALITY ... authentication failed）。上面的 Clash 配置已经带了"
   ylw "  • 客户端务必开启国内直连分流（服务端屏蔽了 geoip:cn，回国流量会失败）"
 }
 
