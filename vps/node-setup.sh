@@ -531,11 +531,10 @@ acme_issue(){ # acme_issue 名字...
   local -a args=()
   for n in "$@"; do args+=(-d "$n"); done
   if (( HTTP01 )); then args+=(--webroot "$WEB"); else args+=(--dns dns_cf); fi
-  set +e
-  if (( HTTP01 )); then $ACME --issue "${args[@]}" --keylength ec-256
-  else CF_Token=$CF_TOKEN $ACME --issue "${args[@]}" --keylength ec-256; fi
-  rc=$?
-  set -e
+  # 退出码 2 = 证书已存在、跳过，属于正常；用 || 接住，ERR trap 不会把它当成出错
+  rc=0
+  if (( HTTP01 )); then $ACME --issue "${args[@]}" --keylength ec-256 || rc=$?
+  else CF_Token=$CF_TOKEN $ACME --issue "${args[@]}" --keylength ec-256 || rc=$?; fi
   [[ $rc -eq 0 || $rc -eq 2 ]] && return 0
   if (( HTTP01 )); then die "证书申请失败：确认域名是灰色云朵，且 VPS 商家防火墙放行了 TCP 80"
   else die "证书申请失败：检查 Cloudflare Token 权限（区域:读取 + DNS:编辑）"; fi
