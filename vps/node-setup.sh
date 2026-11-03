@@ -387,6 +387,10 @@ setup_site_http(){
 <style>body{font-family:system-ui,sans-serif;max-width:640px;margin:80px auto;padding:0 16px;color:#222;line-height:1.6}</style>
 </head><body><h1>Field Notes</h1><p>Occasional notes on photography and travel. More posts coming soon.</p></body></html>
 EOF
+  [[ -f /etc/nginx/nginx.conf ]] || die "nginx 安装不完整（缺 /etc/nginx/nginx.conf），请运行 apt-get install --reinstall nginx-common nginx 后重跑"
+  grep -qE '^[^#]*include[[:space:]]+/etc/nginx/sites-enabled/' /etc/nginx/nginx.conf \
+    || die "/etc/nginx/nginx.conf 没有加载 sites-enabled 目录（可能不是 Debian 自带的 nginx），请改用 apt 安装的 nginx"
+  mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
   rm -f /etc/nginx/sites-enabled/default
   write_nginx 0
   ln -sf "$NGX_SITE" /etc/nginx/sites-enabled/proxy-node
@@ -1069,6 +1073,7 @@ remove_components(){ # remove_components 下标...
 
 # 部署前：列出其他脚本 / 面板装的代理，默认全部卸载，避免端口、服务、配置互相打架
 # 本脚本以前部署过（有 state.env）时，Xray / Hysteria2 是自己的，会被原地更新，不列出
+# nginx、acme.sh 是本脚本自己要用的，不列出；它们里面冲突的旧配置由 fix_conflicts 处理
 preinstall_cleanup(){
   grn "[检查] 已安装的其他代理"
   detect_all
@@ -1076,7 +1081,7 @@ preinstall_cleanup(){
   local -a cand=() pick=()
   [[ -f $STATE ]] && ours=1
   for i in "${!C_NAME[@]}"; do
-    [[ ${C_TYPE[$i]} == self ]] && continue
+    [[ ${C_TYPE[$i]} == self || ${C_TYPE[$i]} == pkg || ${C_TYPE[$i]} == acme ]] && continue
     if (( ours )) && [[ ${C_NAME[$i]} == Xray || ${C_NAME[$i]} == "Hysteria / Hysteria2" ]]; then continue; fi
     cand+=("$i")
   done
