@@ -247,7 +247,7 @@ check_ports(){
   if [[ -n $busy ]]; then
     red "以下端口被其他程序占用（TCP 80 / $RPORT / $TARGET_PORT，UDP ${HPORT}）："
     echo "$busy"
-    die "请先停掉它（例如 systemctl disable --now caddy apache2），再重新运行。"
+    die "请先停掉它（例如 systemctl disable --now caddy apache2），或运行 bash $0 uninstall 卸载其他代理，再重新运行。"
   fi
 }
 
@@ -275,6 +275,105 @@ load_or_gen_state(){
     printf '%s=%q\n' UUID "$UUID" PRIV "$PRIV" PUB "$PUB" SID "$SID" XPATH "$XPATH" \
       WSPATH "$WSPATH" HY_PASS "$HY_PASS" OBFS_PASS "$OBFS_PASS" \
       SAVED_DOMAIN "$DOMAIN" SAVED_CDN "$CDN" SAVED_CERTS "$CERT_MAIN${CERT_CDN:+ $CERT_CDN}" > "$STATE" )
+}
+
+# ------------------------------------------------------- 清理旧配置冲突 ----
+# 其他脚本（包括你以前的 la-setup.sh / reality-setup.sh）留下的东西可能和本脚本冲突：
+#   1) 别的 nginx 站点监听公网 Reality 端口 / 18443 / UDP 端口（h3）→ Xray、Hysteria2 起不来
+#   2) 别的 acme.sh 证书续期时把旧证书复制给 Hysteria2 → 覆盖掉新证书
+# 自动停用并备份到 $WORKDIR/backup-时间/，不会直接删除
+
+# nginx_listen_conflicts → 输出有冲突 listen 的配置文件
+nginx_listen_conflicts(){
+  local dump f="" line addr port flags ours_link=/etc/nginx/sites-enabled/proxy-node
+  local -a tok
+  local -A bad=()
+  # nginx -T 能列出所有被 include 的文件；配置本身有错时退回到扫描常见目录
+  if ! dump=$(nginx -T 2>/dev/null); then
+    dump=$(for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
+             if [[ -f $f ]]; then echo "# configuration file $f:"; cat "$f"; fi; done)
+  fi
+  local stmt
+  local -a stmts
+  while IFS= read -r line; do
+    if [[ $line =~ ^#\ configuration\ file\ (.+):$ ]]; then f=${BASH_REMATCH[1]}; continue; fi
+    line=${line%%#*}                                   # 去掉注释
+    [[ $line == *listen* ]] || continue
+    # 一行里可能有多条指令：server { listen 443 ssl; listen [::]:443; ... }
+    IFS=$'\n' read -rd '' -a stmts < <(tr ';{}' '\n\n\n' <<<"$line") || true
+    for stmt in "${stmts[@]}"; do
+      read -ra tok <<<"$stmt"
+      [[ ${tok[0]:-} == listen && -n ${tok[1]:-} ]] || continue
+      addr=${tok[1]}
+      [[ $addr == unix:* ]] && continue
+      if [[ $addr == *:* ]]; then port=${addr##*:}; else port=$addr; fi
+      [[ $port =~ ^[0-9]+$ ]] || continue
+      flags=" ${tok[*]:2} "
+      if [[ $flags == *" quic "* || $flags == *" udp "* ]]; then
+        (( ! NO_HY2 )) && [[ $port == "$HPORT" ]] && bad[$f]=1
+      elif [[ $port == "$RPORT" || $port == "$TARGET_PORT" ]]; then
+        bad[$f]=1
+      fi
+    done
+  done <<<"$dump"
+  for f in "${!bad[@]}"; do
+    [[ $f == "$NGX_SITE" || $f == "$ours_link" ]] || echo "$f"
+  done
+}
+
+# acme_val 配置文件 键 → 值（acme.sh 会把 reloadcmd 存成 base64）
+acme_val(){
+  local v
+  v=$(grep -m1 "^$2=" "$1" 2>/dev/null | cut -d= -f2-) || true
+  v=${v#\'}; v=${v%\'}
+  if [[ $v == __ACME_BASE64__START_*__ACME_BASE64__END_ ]]; then
+    v=${v#__ACME_BASE64__START_}; v=${v%__ACME_BASE64__END_}
+    v=$(base64 -d <<<"$v" 2>/dev/null || true)
+  fi
+  printf '%s' "$v"
+}
+
+fix_conflicts(){
+  grn "[检查] 旧配置冲突"
+  local backup found=0 f
+  backup=$WORKDIR/backup-$(date +%Y%m%d-%H%M%S)
+
+  # 1) nginx 站点
+  while read -r f; do
+    [[ -n $f ]] || continue
+    [[ $f == /etc/nginx/nginx.conf ]] && die "/etc/nginx/nginx.conf 里有 server 监听端口 $RPORT / $TARGET_PORT，请手动删掉那段后重跑"
+    mkdir -p "$backup"; found=1
+    if [[ -L $f ]]; then cp -L "$f" "$backup/$(basename "$f")"; rm -f "$f"
+    else mv "$f" "$backup/"; fi
+    ylw "  停用 nginx 站点 $f（它占用了 Xray / Hysteria2 要用的端口）"
+  done < <(nginx_listen_conflicts)
+
+  # 2) 会覆盖 Hysteria2 证书的旧 acme.sh 证书
+  local d base name conf paths reload w hit script
+  local -a words opt
+  for d in /root/.acme.sh/*/; do
+    [[ -d $d ]] || continue
+    base=${d%/}; base=${base##*/}; name=${base%_ecc}; conf=$d$name.conf
+    [[ -f $conf ]] || continue
+    paths="$(acme_val "$conf" Le_RealFullChainPath) $(acme_val "$conf" Le_RealCertPath) $(acme_val "$conf" Le_RealKeyPath)"
+    [[ $paths == *"$SSL/"* ]] && continue                       # 本脚本自己的证书
+    reload=$(acme_val "$conf" Le_ReloadCmd)
+    hit=0; script=""
+    [[ $paths == *"/etc/hysteria/"* || $reload == *hysteria* ]] && hit=1
+    read -ra words <<<"$reload"
+    for w in "${words[@]}"; do                                   # reloadcmd 调用的脚本里是否操作 hysteria
+      if [[ $w == /* && -f $w ]] && grep -q hysteria "$w" 2>/dev/null; then hit=1; script=$w; fi
+    done
+    (( hit )) || continue
+    mkdir -p "$backup"; found=1
+    opt=(); [[ $base == *_ecc ]] && opt=(--ecc)
+    [[ -x $ACME ]] && { $ACME --remove -d "$name" "${opt[@]}" >/dev/null 2>&1 || true; }
+    mv "${d%/}" "$backup/"
+    [[ -n $script && $script != /usr/local/bin/proxy-node-cert-reload ]] && mv "$script" "$backup/"
+    ylw "  移除旧证书 $name：它续期时会把旧证书复制给 Hysteria2${script:+（续期脚本 $script 一并移走）}"
+  done
+
+  if (( found )); then ylw "  已备份到 $backup"; else grn "  没有发现冲突"; fi
 }
 
 # ------------------------------------------------------------ nginx 站点 ----
@@ -1012,6 +1111,7 @@ main(){
   mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
   install_deps
   check_dns
+  fix_conflicts
   check_ports
   setup_site_http
   issue_cert
