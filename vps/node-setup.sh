@@ -832,8 +832,8 @@ write_info(){
     [[ -n $CDN ]] && echo "  - {name: $NODE-cdn-ws, type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
     echo "===== 分享链接（v2rayN / NekoBox / Shadowrocket 等）====="
-    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&type=tcp&flow=xtls-rprx-vision#$NODE-reality"
-    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&type=xhttp&path=%2F$XPATH&mode=auto#$NODE-reality-xhttp"
+    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$NODE-reality"
+    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$NODE-reality-xhttp"
     (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$NODE-hysteria2"
     if [[ -n $CDN ]]; then
       echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$NODE-cdn-xhttp"
@@ -852,8 +852,6 @@ write_info(){
   fi
   (( HTTP01 )) || ylw "  • Cloudflare Token 已保存在 /root/.acme.sh/account.conf 供自动续期；卸载时会一并删除"
 
-  ylw "  • Clash / mihomo 用分享链接导入 Reality 节点时，要在 reality-opts 里手动加 support-x25519mlkem768: true，"
-  ylw "    否则 Xray v26.9.9+ 会拒绝握手（日志：REALITY ... authentication failed）。上面的 Clash 配置已经带了"
   ylw "  • 客户端务必开启国内直连分流（服务端屏蔽了 geoip:cn，回国流量会失败）"
 }
 
