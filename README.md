@@ -76,3 +76,25 @@ sudo bash vps/node-setup.sh uninstall --all -y
 - 删除 root crontab 里引用了这些路径的行
 
 nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会包含，需要按编号单独选。SSH 和防火墙的放行规则不会改动。
+
+## windows/move-user-folders.bat：把用户文件夹移到 D 盘
+
+一次性把 **桌面、下载、文档、图片、音乐、视频** 的位置改到 `D:\Users` 下：
+
+| 文件夹 | 新位置 |
+|---|---|
+| 桌面 | `D:\Users\Desktop` |
+| 下载 | `D:\Users\Downloads` |
+| 文档 | `D:\Users\Documents` |
+| 图片 | `D:\Users\Pictures` |
+| 音乐 | `D:\Users\Music` |
+| 视频 | `D:\Users\Videos` |
+
+双击运行即可，**不要**右键"以管理员身份运行"（改的是当前用户的注册表）。运行时会问是否把原来的文件一起移过去：
+
+- **Y**：用 robocopy 把文件移动到新位置
+- **N**：只改位置，旧文件留在原处
+
+想放到别的目录，可以在命令行传参数：`move-user-folders.bat E:\MyFiles`。
+
+注意：如果开启了 OneDrive 的"备份桌面/文档/图片"，要先在 OneDrive 设置里关掉，否则会冲突。
