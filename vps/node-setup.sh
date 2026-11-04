@@ -1123,16 +1123,28 @@ write_info(){
   set_flag "${REGION:-none}"
   [[ -n $FLAG ]] && echo "  节点名国旗：${FLAG% }（$REGION）" || ylw "  没识别出本机所在国家，节点名不加国旗（可用 -r us 指定）"
   local N="$FLAG$NODE" U="$FLAG_URI$NODE"
+  # 上下行分离（需要 reality-xhttp + cdn-xhttp）：上行经 Cloudflare CDN，下行直连 REALITY。
+  # 两路以同一 path 到达同一个 XHTTP 入站（nginx grpc_pass 和 Vision fallback 都指向 $XHTTP_SOCK），
+  # 服务端按 path 里的会话 UUID 配对。上行过 CF 用 packet-up：兼容性最好，不受 CF 100 秒无数据掐断影响
+  local split=0 split_extra=""
+  (( P_RX && P_CX )) && [[ -n $CDN ]] && split=1
+  (( split )) && split_extra=$(jq -nrc --arg a "$DOMAIN" --argjson p "$RPORT" --arg pbk "$PUB" --arg sid "$SID" --arg path "/$XPATH" \
+    '{downloadSettings: {address: $a, port: $p, network: "xhttp", security: "reality",
+      realitySettings: {serverName: $a, fingerprint: "chrome", publicKey: $pbk, shortId: $sid},
+      xhttpSettings: {path: $path}}} | @uri')
   {
     echo "===== Clash / mihomo（放到 proxies: 下）====="
-    echo "  - {name: \"$N-reality\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
-    (( P_RX )) && echo "  - {name: \"$N-reality-xhttp\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $DOMAIN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
+    echo "  - {name: \"$N-reality\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
+    (( P_RX )) && echo "  - {name: \"$N-reality-xhttp\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $DOMAIN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
+    (( split )) && echo "  - {name: \"$N-split\", type: vless, server: $CDN, port: 443, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $CDN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, host: $CDN, mode: packet-up, download-settings: {path: /$XPATH, server: $DOMAIN, port: $RPORT, tls: true, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}}}"
     (( NO_HY2 )) || echo "  - {name: \"$N-hysteria2\", type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
+    (( P_CX )) && echo "  - {name: \"$N-cdn-xhttp\", type: vless, server: $CDN, port: 443, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $CDN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, host: $CDN, mode: auto}}"
     (( P_CW )) && echo "  - {name: \"$N-cdn-ws\", type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
     echo "===== 分享链接（v2rayN / NekoBox / Shadowrocket 等）====="
     echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$U-reality"
     (( P_RX )) && echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$U-reality-xhttp"
+    (( split )) && echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=packet-up&extra=$split_extra#$U-split"
     (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$U-hysteria2"
     if [[ -n $CDN ]]; then
       (( P_CX )) && echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$U-cdn-xhttp"

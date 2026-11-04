@@ -3,7 +3,7 @@ Personal utility scripts
 
 ## vps/node-setup.sh：代理节点一键部署
 
-合并了原来的 `reality-setup.sh`（Reality）和 `la-setup.sh`（Hysteria2 + CDN）。一台 VPS 同时提供三条线路，被封时可以切换：
+合并了原来的 `reality-setup.sh`（Reality）和 `la-setup.sh`（Hysteria2 + CDN）。一台 VPS 同时提供多条线路，被封时可以切换：
 
 | 线路 | 端口 | 作用 |
 |---|---|---|
@@ -11,6 +11,9 @@ Personal utility scripts
 | XHTTP + REALITY | 同上 | 同端口备用（fallback） |
 | Hysteria2 | UDP 443 + 端口跳跃 20000-40000 | TCP 被封或限速时使用 |
 | XHTTP / WS + TLS 经 Cloudflare | CDN 443 | VPS 的 IP 被墙后仍能用（可选） |
+| 上下行分离 split（XHTTP） | 上行 CDN 443，下行 TCP 443 | 上行走 Cloudflare、下行直连 REALITY，单看任一条连接都不完整（需要同时部署 reality-xhttp 和 cdn-xhttp） |
+
+split 节点的上行和下行经不同路径到达同一个 XHTTP 入站，服务端按 path 里的会话 ID 配对。上行过 Cloudflare 固定用 `packet-up`，兼容性最好。客户端要求：mihomo 用 `xhttp-opts.download-settings`；v2rayN 等 Xray 客户端用分享链接里的 `extra`。Sub-Store 能把 `extra` 转成 mihomo 的 `download-settings`。Shadowrocket 对 XHTTP 上下行分离的支持未验证，连不上就用其他线路。主 IP 被墙时 split 的下行也会断，这种情况要用纯 CDN 线路。
 
 ### 准备
 
