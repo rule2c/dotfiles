@@ -98,7 +98,7 @@ nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会�
 - **不支持 XHTTP：** sing-box 没有 XHTTP 传输，Sub-Store 输出时会丢掉 `xhttp` 节点。东京只剩 vision；洛杉矶剩 reality → hysteria2 → cdn-ws。
 - **回落组：** sing-box 没有 `fallback`，用 `urltest` 加很大的 `tolerance`（10000 ms）代替，效果是按顺序用第一个可用节点。区别是前面的节点恢复后不会自动切回去，要等当前节点失效。
 - **空组：** 节点名都没匹配上时，模板脚本会往组里放一个名为 `COMPATIBLE` 的直连出站，不会像 mihomo 那样 REJECT。看到 `COMPATIBLE` 说明节点名或脚本参数不对。
-- **自定义规则：** sing-box 读不了 Clash 的 classical 列表，所以 `Customized_Rules` 里的 Apple-AI、Custom_Direct、Custom_Proxy、Steam_CDN 是以内联规则集写进配置的。改了这些列表要同步更新 `sing-box.json`。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，已去掉，只保留列表里的网段。
+- **自定义规则：** sing-box 读不了 Clash 的 classical 列表。`Customized_Rules` 仓库的 Action 会把 `rule/*.list` 转成 `rule/sing-box/*.json`（sing-box 规则集源文件），配置里以 `format: source` 远程引用。列表改动推送后自动重新生成，不用改这里。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，转换时会跳过。
 - **geosite / geoip：** 用 MetaCubeX meta-rules-dat 的 `sing` 分支 `.srs` 规则集，与 mihomo 用的是同一份数据，经 `🚀 手动选择` 下载。
 
 ## windows/move-user-folders.bat：把用户文件夹移到 D 盘
