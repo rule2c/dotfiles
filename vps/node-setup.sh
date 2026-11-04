@@ -33,10 +33,13 @@
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
 #    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
-#    Xray 默认固定为 v26.9.9；环境变量 XRAY_VERSION=v26.x.x 可换成别的版本，XRAY_VERSION=latest 安装最新版
+#    Xray 默认固定为 v26.7.28；环境变量 XRAY_VERSION=v26.x.x 可换成别的版本，XRAY_VERSION=latest 安装最新版
 # =============================================================================
 set -Eeuo pipefail
-XRAY_DEFAULT_VERSION=v26.9.9   # 已用这个版本测过全部线路
+# v26.7.28 + minClientVer 0.0.0：mihomo 和 Shadowrocket 的 Reality 都实测能连
+#   - v26.9.9 起拒绝不带 X25519MLKEM768 的 Client Hello，Shadowrocket 无法开启，连不上
+#   - v26.7.28 默认 minClientVer=26.3.27，mihomo 上报版本 1.8.2 会被拒，所以配置里显式写 0.0.0
+XRAY_DEFAULT_VERSION=v26.7.28
 # 任何一步失败都打印位置，不再静默退出
 trap 'rc=$?; printf "\033[31m脚本出错退出：第 %s 行，命令：%s（退出码 %s）\033[0m\n" "$LINENO" "$BASH_COMMAND" "$rc" >&2; exit $rc' ERR
 
@@ -663,7 +666,8 @@ EOF
           "target": "127.0.0.1:$TARGET_PORT",
           "serverNames": [ "$DOMAIN" ],
           "privateKey": "$PRIV",
-          "shortIds": [ "$SID" ]
+          "shortIds": [ "$SID" ],
+          "minClientVer": "0.0.0"
         }
       },
       $sniff
