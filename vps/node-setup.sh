@@ -30,6 +30,7 @@
 #        --no-hy2   不部署 Hysteria2
 #    -e, --email    申请证书用的邮箱，默认 admin@主域名
 #    -n, --name     节点名前缀，默认取主域名第一段
+#    -r, --region   节点名前的国旗：两位国家代码，如 us（🇺🇸）、jp（🇯🇵）；默认按本机 IP 自动识别，none 不加
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
 #    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
@@ -64,7 +65,7 @@ die(){ red "$*"; exit 1; }
 usage(){ awk 'NR>2 && /^# =====/{exit} NR>2{sub(/^# ?/,""); print}' "$0" 2>/dev/null || echo "用法：sudo bash node-setup.sh -d 主域名 [-c CDN域名] [-p 端口] [-u hy2端口] [--hop 范围]"; }
 
 # ---------------------------------------------------------------- 参数 ----
-CMD=install DOMAIN="" CDN="" RPORT="" HPORT="" HOP="" EMAIL="" NODE="" OBFS=0 NO_HY2=0 RESET=0 ALL=0 YES=0
+CMD=install DOMAIN="" CDN="" RPORT="" HPORT="" HOP="" EMAIL="" NODE="" REGION="" OBFS=0 NO_HY2=0 RESET=0 ALL=0 YES=0
 CF_TOKEN=${CF_Token:-} HTTP01=0
 
 parse_args(){
@@ -78,6 +79,7 @@ parse_args(){
       --hop)         HOP=${2:?缺少端口范围}; shift ;;
       -e|--email)    EMAIL=${2:?缺少邮箱}; shift ;;
       -n|--name)     NODE=${2:?缺少名称}; shift ;;
+      -r|--region)   REGION=${2:?缺少国家代码}; shift ;;
       --cf-token)    CF_TOKEN=${2:?缺少 Token}; shift ;;
       --http01)      HTTP01=1 ;;
       --obfs)        OBFS=1 ;;
@@ -137,6 +139,8 @@ validate(){
   RPORT=${RPORT:-443}; HPORT=${HPORT:-443}; HOP=${HOP:-20000-40000}
   EMAIL=${EMAIL:-admin@$DOMAIN}
   NODE=${NODE:-${DOMAIN%%.*}}
+  REGION=${REGION,,}
+  [[ -z $REGION || $REGION == none || $REGION =~ ^[a-z]{2}$ ]] || die "国家代码不对：$REGION（两位字母，如 us、jp；none 不加国旗）"
   local p
   for p in "$RPORT" "$HPORT"; do
     [[ $p =~ ^[0-9]+$ ]] && (( p >= 1 && p <= 65535 )) || die "端口不对：$p"
@@ -156,6 +160,29 @@ validate(){
 
 # ---------------------------------------------------------------- 工具 ----
 public_ip(){ curl -4 -s --max-time 5 https://api.ipify.org || curl -4 -s --max-time 5 https://ifconfig.me || true; }
+# 本机 IP 所在国家的两位代码（小写），识别不到输出空
+ip_country(){
+  local c
+  c=$(curl -4 -s --max-time 5 https://ipinfo.io/country || curl -4 -s --max-time 5 https://ifconfig.co/country-iso || true)
+  c=${c//[$'\r\n ']/}
+  [[ $c =~ ^[A-Za-z]{2}$ ]] && echo "${c,,}" || true
+}
+
+# set_flag 国家代码 → FLAG（国旗 emoji + 空格）和 FLAG_URI（分享链接 # 后面用的百分号编码）
+# 国旗 = 两个区域指示符 U+1F1E6+n，UTF-8 是 F0 9F 87 (A6+n)
+set_flag(){
+  FLAG="" FLAG_URI=""
+  [[ $1 =~ ^[a-z]{2}$ ]] || return 0
+  local i ch hex
+  for i in 0 1; do
+    ch=$(printf '%d' "'${1:i:1}")
+    printf -v hex '%02X' $(( 0xA6 + ch - 97 ))
+    FLAG+=$(printf "\\xF0\\x9F\\x87\\x$hex")
+    FLAG_URI+="%F0%9F%87%$hex"
+  done
+  FLAG+=" " FLAG_URI+="%20"
+}
+
 has_v6(){ [[ -s /proc/net/if_inet6 ]]; }
 ver_ge(){ [[ $(printf '%s\n%s\n' "$2" "$1" | sort -V | sed -n 1p) == "$2" ]]; }   # ver_ge 当前 要求
 
@@ -828,20 +855,24 @@ write_info(){
   [[ -n $HOP ]] && { hy_extra_yaml+=", ports: $HOP, hop-interval: 30"; hy_extra_uri+="&mport=$HOP"; }
   (( OBFS )) && { hy_extra_yaml+=", obfs: salamander, obfs-password: $OBFS_PASS"; hy_extra_uri+="&obfs=salamander&obfs-password=$OBFS_PASS"; }
 
+  [[ -n $REGION ]] || REGION=$(ip_country)
+  set_flag "${REGION:-none}"
+  [[ -n $FLAG ]] && echo "  节点名国旗：${FLAG% }（$REGION）" || ylw "  没识别出本机所在国家，节点名不加国旗（可用 -r us 指定）"
+  local N="$FLAG$NODE" U="$FLAG_URI$NODE"
   {
     echo "===== Clash / mihomo（放到 proxies: 下）====="
-    echo "  - {name: $NODE-reality, type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
-    echo "  - {name: $NODE-reality-xhttp, type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $DOMAIN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
-    (( NO_HY2 )) || echo "  - {name: $NODE-hysteria2, type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
-    [[ -n $CDN ]] && echo "  - {name: $NODE-cdn-ws, type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
+    echo "  - {name: \"$N-reality\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
+    echo "  - {name: \"$N-reality-xhttp\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $DOMAIN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: $SID, support-x25519mlkem768: true}}"
+    (( NO_HY2 )) || echo "  - {name: \"$N-hysteria2\", type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
+    [[ -n $CDN ]] && echo "  - {name: \"$N-cdn-ws\", type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
     echo "===== 分享链接（v2rayN / NekoBox / Shadowrocket 等）====="
-    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$NODE-reality"
-    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$NODE-reality-xhttp"
-    (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$NODE-hysteria2"
+    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$U-reality"
+    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$U-reality-xhttp"
+    (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$U-hysteria2"
     if [[ -n $CDN ]]; then
-      echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$NODE-cdn-xhttp"
-      echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=ws&host=$CDN&path=%2F$WSPATH#$NODE-cdn-ws"
+      echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$U-cdn-xhttp"
+      echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=ws&host=$CDN&path=%2F$WSPATH#$U-cdn-ws"
     fi
   } > "$INFO"
   chmod 600 "$INFO"
