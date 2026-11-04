@@ -77,6 +77,30 @@ sudo bash vps/node-setup.sh uninstall --all -y
 
 nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会包含，需要按编号单独选。SSH 和防火墙的放行规则不会改动。
 
+## client/sing-box.json：sing-box 完整配置（经 Sub-Store 下发）
+
+分流逻辑与 `client/mihomo.yaml` 一致，按 sing-box 1.12+ 的格式写（1.14 下 `download_detour` 会提示已废弃，1.16 前都能用）。sing-box 不能像 mihomo 那样直接引用订阅，节点由 Sub-Store 的模板脚本插进去。
+
+### 在 Sub-Store 里配置
+
+1. 「文件」→ 新建，名称填 `sing-box`，来源选本地，把 `client/sing-box.json` 的内容粘贴进去。
+2. 在这个文件里添加「脚本操作」，链接填：
+
+   ```
+   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳Oracle回落🏷ℹ️oracle_arm-(xhttp|vision)🕳vmiss回落🏷ℹ️vmiss-🕳nosla回落🏷ℹ️nosla-
+   ```
+
+   含义：读取名为 `all` 的组合订阅，按节点名把节点插进三个回落组（规则和 mihomo 的 `filter` 相同）。
+3. 客户端（SFA / SFI / SFM 等）添加远程配置，链接为 `https://<Sub-Store 域名>:<端口>/<后端路径>/api/file/sing-box`。
+
+### 和 mihomo 版的差别
+
+- **不支持 XHTTP：** sing-box 没有 XHTTP 传输，Sub-Store 输出时会丢掉 `xhttp` 节点。东京只剩 vision；洛杉矶剩 reality → hysteria2 → cdn-ws。
+- **回落组：** sing-box 没有 `fallback`，用 `urltest` 加很大的 `tolerance`（10000 ms）代替，效果是按顺序用第一个可用节点。区别是前面的节点恢复后不会自动切回去，要等当前节点失效。
+- **空组：** 节点名都没匹配上时，模板脚本会往组里放一个名为 `COMPATIBLE` 的直连出站，不会像 mihomo 那样 REJECT。看到 `COMPATIBLE` 说明节点名或脚本参数不对。
+- **自定义规则：** sing-box 读不了 Clash 的 classical 列表，所以 `Customized_Rules` 里的 Apple-AI、Custom_Direct、Custom_Proxy、Steam_CDN 是以内联规则集写进配置的。改了这些列表要同步更新 `sing-box.json`。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，已去掉，只保留列表里的网段。
+- **geosite / geoip：** 用 MetaCubeX meta-rules-dat 的 `sing` 分支 `.srs` 规则集，与 mihomo 用的是同一份数据，经 `🚀 手动选择` 下载。
+
 ## windows/move-user-folders.bat：把用户文件夹移到 D 盘
 
 一次性把 **桌面、下载、文档、图片、音乐、视频** 的位置改到 `D:\Users` 下：

@@ -141,10 +141,13 @@ BACKEND_PATH=$BP
     $BASE$BP/download/collection/all?target=mihomo
   Shadowrocket（policy-path）：
     $BASE$BP/download/collection/all?target=shadowrocket
+  sing-box（只有节点，完整配置用下面的文件链接）：
+    $BASE$BP/download/collection/all?target=sing-box
 
 完整配置文件（在 Sub-Store「文件」里新建后的链接）：
   OpenClash / Clash Verge：$BASE$BP/api/file/mihomo
   Shadowrocket：          $BASE$BP/api/file/shadowrocket
+  sing-box：              $BASE$BP/api/file/sing-box（文件需加 sing-box 模板脚本，见 README）
 EOF
 
 # 如果模板和脚本放在同一目录，顺手把链接填进去
@@ -158,6 +161,8 @@ fi
 if [[ -f "$SRC/shadowrocket.conf" ]]; then
   sed "s#SUBSTORE_URL#$SR_SUB#g" "$SRC/shadowrocket.conf" > "$OUT/shadowrocket.conf"
 fi
+# sing-box 模板由 Sub-Store 脚本按组合订阅名插入节点，不含链接，原样复制
+[[ -f "$SRC/sing-box.json" ]] && cp "$SRC/sing-box.json" "$OUT/sing-box.json"
 echo; cat "$INFO"; echo
 if [[ -n "$(ls -A "$OUT" 2>/dev/null)" ]]; then grn "已生成填好链接的配置：$OUT/（把内容粘贴到 Sub-Store 的「文件」里）"; fi
 ylw "以上信息已保存在 $INFO。后端路径就是访问密码，不要公开。"
