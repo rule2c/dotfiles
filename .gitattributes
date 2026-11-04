@@ -1,2 +1,3 @@
-*.bat text eol=crlf
-*.cmd text eol=crlf
+# Store .bat/.cmd with CRLF as-is so raw downloads from GitHub also have CRLF
+*.bat -text
+*.cmd -text
