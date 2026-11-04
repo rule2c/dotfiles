@@ -9,7 +9,7 @@
 #    3) XHTTP / WS + TLS 经 Cloudflare CDN（可选）  VPS 的 IP 被墙后仍可用
 #
 #  用法：
-#    sudo bash node-setup.sh                                   # 交互式，按提示输入
+#    sudo bash node-setup.sh                                   # 菜单 + 部署向导（按编号选择）
 #    CF_Token=xxxx sudo -E bash node-setup.sh -d a.example.com -c cdn.example.com
 #    sudo bash node-setup.sh -d a.example.com -p 443 -u 443 --hop 20000-40000 -e me@example.com
 #    sudo bash node-setup.sh info                              # 重新显示节点信息
@@ -107,27 +107,146 @@ ask(){ # ask 变量名 提示 默认值
   printf -v "$1" '%s' "${v:-$3}"
 }
 
+# choose 变量名 提示 默认编号 选项...   单选，变量里存选中的编号（从 1 开始）
+choose(){
+  local __v=$1 prompt=$2 def=$3 n=0 o ans; shift 3
+  echo "$prompt"
+  for o in "$@"; do n=$((n+1)); echo "  $n) $o"; done
+  while :; do
+    read -rp "请输入编号 [默认 $def]: " ans || true
+    ans=${ans:-$def}
+    [[ $ans =~ ^[0-9]+$ ]] && (( 10#$ans >= 1 && 10#$ans <= n )) && { ans=$((10#$ans)); break; }
+    red "  请输入 1-$n 之间的数字"
+  done
+  printf -v "$__v" '%s' "$ans"
+}
+
+# 部署向导：能选的都用编号选，命令行已给的参数作为默认值
 interactive(){
   [[ -t 0 ]] || die "缺少 -d 主域名（非交互环境请用参数传入，见 --help）"
+  local c ans i ok
   echo
-  grn "== 一键部署：Reality 偷自己 + Hysteria2 + CDN 备用 =="
-  ylw "主域名：Cloudflare【灰色云朵】指向本机；CDN 域名：【橙色云朵】指向本机，可留空跳过。"
+  grn "== 部署向导：Reality 偷自己 + Hysteria2 + CDN 备用 =="
   echo
-  while [[ -z $DOMAIN ]]; do ask DOMAIN "主域名（Reality + Hysteria2 用）" ""; done
-  ask CDN   "CDN 域名（留空不部署）" ""
-  ask RPORT "Reality TCP 端口" 443
-  local yn; ask yn "部署 Hysteria2？(Y/n)" Y
-  if [[ $yn =~ ^[Nn] ]]; then NO_HY2=1; else
-    ask HPORT "Hysteria2 UDP 端口" 443
-    ask HOP   "端口跳跃范围（off 关闭）" 20000-40000
-    ask yn    "开启 salamander 混淆？(y/N)" N; [[ $yn =~ ^[Yy] ]] && OBFS=1
+  ylw "主域名：Cloudflare【灰色云朵】，A 记录指向本机"
+  while [[ -z $DOMAIN ]]; do ask DOMAIN "主域名" ""; done
+
+  # ---- 协议（多选）
+  local names=(reality reality-xhttp hy2 cdn-xhttp cdn-ws)
+  local descs=("VLESS + Vision + REALITY  TCP（必选）"
+               "XHTTP + REALITY           同端口备用"
+               "Hysteria2                 UDP"
+               "XHTTP + TLS 经 Cloudflare CDN（IP 被墙后仍可用）"
+               "WS + TLS 经 Cloudflare CDN（兼容老客户端，Xray 已标记过时）")
+  local def="1 2 3 4 5"
+  if [[ -n $PROTO ]]; then
+    def=""
+    for i in "${!names[@]}"; do [[ ",${PROTO,,}," == *",${names[i]},"* ]] && def+="$((i+1)) "; done
+    def=${def% }
+  elif (( NO_HY2 )); then def="1 2 4 5"
   fi
-  local def="reality,reality-xhttp"
-  (( NO_HY2 )) || def+=",hy2"
-  [[ -n $CDN ]] && def+=",cdn-xhttp,cdn-ws"
-  ask PROTO "协议（逗号分隔：reality / reality-xhttp / hy2 / cdn-xhttp / cdn-ws）" "$def"
-  NO_HY2=0   # 以上面的协议列表为准
-  ask EMAIL "证书邮箱" "admin@$DOMAIN"
+  echo
+  echo "选择要部署的协议（多个编号用空格分隔）："
+  for i in "${!names[@]}"; do printf '  %d) %-14s %s\n' $((i+1)) "${names[i]}" "${descs[i]}"; done
+  while :; do
+    read -rp "请输入编号 [默认 $def]: " ans || true
+    ans=${ans:-$def}; ans=${ans//,/ }
+    PROTO="" ok=1
+    for c in $ans; do
+      [[ $c =~ ^[1-5]$ ]] || { ok=0; break; }
+      [[ ",$PROTO," == *",${names[c-1]},"* ]] || PROTO+="${PROTO:+,}${names[c-1]}"
+    done
+    (( ok )) || { red "  只能输入 1-5"; continue; }
+    [[ ",$PROTO," == *",reality,"* ]] || { red "  1) reality 必选（它是 TCP 入口，CDN 回源也经过它）"; continue; }
+    break
+  done
+  NO_HY2=0   # 以上面选的协议为准
+
+  # ---- CDN 域名：选了 4 / 5 才问
+  if [[ $PROTO == *cdn-* ]]; then
+    echo
+    ylw "CDN 域名：Cloudflare【橙色云朵】，A 记录指向本机，必须和主域名不同"
+    local cdef=$CDN; CDN=""
+    while [[ -z $CDN ]]; do ask CDN "CDN 域名" "$cdef"; done
+  else
+    CDN=""
+  fi
+
+  # ---- 端口
+  echo
+  choose c "Reality TCP 端口：" 1 "443（推荐）" "自定义"
+  if (( c == 2 )); then ask RPORT "Reality TCP 端口" "${RPORT:-8443}"; else RPORT=443; fi
+
+  # ---- Hysteria2
+  if [[ $PROTO == *hy2* ]]; then
+    echo
+    choose c "Hysteria2 UDP 端口：" 1 "443（推荐，和 Reality 同端口，一个 TCP 一个 UDP）" "自定义"
+    if (( c == 2 )); then ask HPORT "Hysteria2 UDP 端口" "${HPORT:-8443}"; else HPORT=443; fi
+    echo
+    local hdef=1; [[ $HOP == off ]] && hdef=2; [[ -n $HOP && $HOP != off && $HOP != 20000-40000 ]] && hdef=3
+    choose c "端口跳跃（把一段 UDP 端口转到 Hysteria2，抗 UDP 限速）：" "$hdef" \
+      "开启，20000-40000（推荐）" "关闭" "自定义范围"
+    case $c in
+      1) HOP=20000-40000 ;;
+      2) HOP=off ;;
+      3) ask HOP "端口跳跃范围，如 30000-50000" "${HOP:-30000-50000}" ;;
+    esac
+    echo
+    choose c "salamander 混淆：" $(( OBFS ? 2 : 1 )) \
+      "不开（推荐：看起来像正常 HTTP/3）" "开启（不再像 HTTP/3；UDP 被 QoS 时可能有用）"
+    OBFS=$(( c == 2 ))
+  fi
+
+  # ---- 节点名 / 国旗
+  echo
+  ask NODE "节点名前缀" "${NODE:-${DOMAIN%%.*}}"
+  echo
+  local rdef=1
+  case ${REGION,,} in us) rdef=2 ;; jp) rdef=3 ;; none) rdef=4 ;; "") ;; *) rdef=5 ;; esac
+  choose c "节点名前的国旗：" "$rdef" "按本机 IP 自动识别" "🇺🇸 美国 us" "🇯🇵 日本 jp" "不加国旗" "其他（输入两位国家代码）"
+  case $c in
+    1) REGION="" ;;
+    2) REGION=us ;;
+    3) REGION=jp ;;
+    4) REGION=none ;;
+    5) ask REGION "两位国家代码，如 hk、sg、de" "${REGION:-hk}" ;;
+  esac
+
+  # ---- 凭据
+  if [[ -f $STATE ]] && (( ! RESET )); then
+    echo
+    choose c "已有上次部署的凭据（UUID / 密钥 / 密码）：" 1 "沿用（客户端不用改）" "重新生成（旧节点全部失效）"
+    RESET=$(( c == 2 ))
+  fi
+
+  echo
+  ask EMAIL "证书邮箱" "${EMAIL:-admin@$DOMAIN}"
+
+  # ---- 确认
+  echo
+  grn "== 确认 =="
+  echo "  主域名：$DOMAIN    Reality 端口：$RPORT"
+  echo "  协议：${PROTO//,/ }"
+  [[ -n $CDN ]] && echo "  CDN 域名：$CDN"
+  [[ $PROTO == *hy2* ]] && echo "  Hysteria2：UDP $HPORT，端口跳跃 ${HOP/off/关闭}，混淆 $( (( OBFS )) && echo 开 || echo 关)"
+  echo "  节点名：$NODE    国旗：${REGION:-自动识别}    凭据：$( (( RESET )) && echo 重新生成 || echo 沿用)"
+  echo
+  choose c "开始部署？" 1 "开始" "退出"
+  (( c == 1 )) || exit 0
+}
+
+# 不带任何参数运行时的主菜单
+main_menu(){
+  echo
+  grn "== node-setup.sh =="
+  local c
+  choose c "要做什么？" 1 "部署 / 重新部署" "查看节点信息" "卸载" "退出"
+  case $c in
+    1) CMD=install ;;
+    2) CMD=info ;;
+    3) CMD=uninstall ;;
+    4) exit 0 ;;
+  esac
 }
 
 # 把 --proto / --no-hy2 / -c 解析成 P_RX P_CX P_CW 和 NO_HY2
@@ -1276,6 +1395,7 @@ do_uninstall(){
 
 main(){
   parse_args "$@"
+  (( $# == 0 )) && [[ -t 0 ]] && main_menu
   if [[ $CMD == info ]]; then
     [[ -f $INFO ]] && cat "$INFO" || die "还没有部署过（找不到 $INFO）"
     exit 0
