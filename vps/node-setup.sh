@@ -121,6 +121,16 @@ choose(){
   printf -v "$__v" '%s' "$ans"
 }
 
+# rand_port tcp|udp：40001-60000 里挑一个本机没被占用的端口
+# （避开默认端口跳跃范围 20000-40000，以及本脚本内部用的 10001 / 18443）
+rand_port(){
+  local p flag=-tln; [[ $1 == udp ]] && flag=-uln
+  while :; do
+    p=$(shuf -i 40001-60000 -n 1)
+    [[ -z $(ss -H $flag "sport = :$p" 2>/dev/null) ]] && { echo "$p"; return 0; }
+  done
+}
+
 # 部署向导：能选的都用编号选，命令行已给的参数作为默认值
 interactive(){
   [[ -t 0 ]] || die "缺少 -d 主域名（非交互环境请用参数传入，见 --help）"
@@ -174,14 +184,25 @@ interactive(){
 
   # ---- 端口
   echo
-  choose c "Reality TCP 端口：" 1 "443（推荐）" "自定义"
-  if (( c == 2 )); then ask RPORT "Reality TCP 端口" "${RPORT:-8443}"; else RPORT=443; fi
+  local rnote=""; [[ -n $CDN ]] && rnote="（用 CDN 时要在 Cloudflare 加 Origin Rule 改回源端口）"
+  choose c "Reality TCP 端口：" "$( [[ -n $RPORT && $RPORT != 443 ]] && echo 3 || echo 1)" \
+    "443（推荐）" "随机 40001-60000$rnote" "自定义$rnote"
+  case $c in
+    1) RPORT=443 ;;
+    2) RPORT=$(rand_port tcp); echo "  随机到 TCP $RPORT" ;;
+    3) ask RPORT "Reality TCP 端口" "${RPORT:-8443}" ;;
+  esac
 
   # ---- Hysteria2
   if [[ $PROTO == *hy2* ]]; then
     echo
-    choose c "Hysteria2 UDP 端口：" 1 "443（推荐，和 Reality 同端口，一个 TCP 一个 UDP）" "自定义"
-    if (( c == 2 )); then ask HPORT "Hysteria2 UDP 端口" "${HPORT:-8443}"; else HPORT=443; fi
+    choose c "Hysteria2 UDP 端口：" "$( [[ -n $HPORT && $HPORT != 443 ]] && echo 3 || echo 1)" \
+      "443（推荐，和 Reality 同端口，一个 TCP 一个 UDP）" "随机 40001-60000" "自定义"
+    case $c in
+      1) HPORT=443 ;;
+      2) HPORT=$(rand_port udp); echo "  随机到 UDP $HPORT" ;;
+      3) ask HPORT "Hysteria2 UDP 端口" "${HPORT:-8443}" ;;
+    esac
     echo
     local hdef=1; [[ $HOP == off ]] && hdef=2; [[ -n $HOP && $HOP != off && $HOP != 20000-40000 ]] && hdef=3
     choose c "端口跳跃（把一段 UDP 端口转到 Hysteria2，抗 UDP 限速）：" "$hdef" \
