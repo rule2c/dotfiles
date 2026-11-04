@@ -13,6 +13,8 @@
 #    CF_Token=xxxx sudo -E bash node-setup.sh -d a.example.com -c cdn.example.com
 #    sudo bash node-setup.sh -d a.example.com -p 443 -u 443 --hop 20000-40000 -e me@example.com
 #    sudo bash node-setup.sh info                              # 重新显示节点信息
+#    node-setup / node-setup update                            # 部署后已装成命令；update 从 GitHub 更新脚本
+#                   仓库是私有的话，把只读 Token（Contents: Read）写进 /root/.gh-token，或用环境变量 GH_TOKEN
 #    sudo bash node-setup.sh uninstall                         # 卸载：列出本机所有代理（含其他脚本装的），选择卸载
 #    sudo bash node-setup.sh uninstall --all -y                # 卸载全部代理组件，不询问
 #
@@ -60,6 +62,9 @@ MAIN_DIR=$SSL/main          # 主域名证书；CDN 域名若被同一张通配�
 CDN_DIR=$SSL/cdn
 NGX_SITE=/etc/nginx/sites-available/proxy-node
 XRAY_CFG=/usr/local/etc/xray/config.json
+SELF_BIN=/usr/local/bin/node-setup
+SELF_URL=${NODE_SETUP_URL:-https://raw.githubusercontent.com/rule2c/personal-scripts/main/vps/node-setup.sh}
+GH_TOKEN_FILE=/root/.gh-token
 XHTTP_SOCK=/dev/shm/xray-xhttp.sock
 TARGET_PORT=18443          # 本机 nginx HTTPS，只监听 127.0.0.1，是 Reality 的 target
 WS_PORT=10001              # CDN WS 入站，只监听 127.0.0.1
@@ -78,7 +83,7 @@ CF_TOKEN=${CF_Token:-} HTTP01=0
 parse_args(){
   while [[ $# -gt 0 ]]; do
     case $1 in
-      install|info|uninstall) CMD=$1 ;;
+      install|info|uninstall|update) CMD=$1 ;;
       -d|--domain)   DOMAIN=${2:?缺少域名}; shift ;;
       -c|--cdn)      CDN=${2:?缺少 CDN 域名}; shift ;;
       -p|--port)     RPORT=${2:?缺少端口}; shift ;;
@@ -256,17 +261,62 @@ interactive(){
   (( c == 1 )) || exit 0
 }
 
+# ------------------------------------------------------------ 自身安装 ----
+# fetch_self 输出文件：从 GitHub 下载最新脚本（有 Token 就带上，私有仓库也能下）
+fetch_self(){
+  local out=$1 tok=${GH_TOKEN:-} code
+  [[ -z $tok && -s $GH_TOKEN_FILE ]] && tok=$(tr -d ' \r\n' < "$GH_TOKEN_FILE")
+  local -a hdr=()
+  [[ -n $tok ]] && hdr=(-H "Authorization: Bearer $tok")
+  code=$(curl -sSL --max-time 30 "${hdr[@]}" -o "$out" -w '%{http_code}' "$SELF_URL" || true)
+  if [[ $code != 200 ]]; then
+    red "下载脚本失败（HTTP ${code:-无响应}）：$SELF_URL"
+    if [[ $code == 404 && -z $tok ]]; then
+      ylw "仓库是私有的话：在 GitHub 创建 fine-grained token（只选这个仓库，Contents: Read），然后"
+      ylw "  echo '你的token' > $GH_TOKEN_FILE && chmod 600 $GH_TOKEN_FILE"
+    fi
+    return 1
+  fi
+  grep -q '^XRAY_DEFAULT_VERSION=' "$out" && bash -n "$out" || { red "下载到的内容不是有效的 node-setup.sh"; return 1; }
+}
+
+# 把脚本装成 node-setup 命令。直接运行的文件就复制它；bash <(curl ...) 这种读不回来，就重新下载
+install_self(){
+  local src=${BASH_SOURCE[0]} tmp
+  if [[ -f $src && $(readlink -f "$src") == "$SELF_BIN" ]]; then return 0; fi
+  if [[ -f $src ]]; then
+    install -m 755 "$src" "$SELF_BIN"
+  else
+    tmp=$(mktemp); fetch_self "$tmp" && install -m 755 "$tmp" "$SELF_BIN" || { rm -f "$tmp"; ylw "  没能装成 node-setup 命令（不影响节点）"; return 0; }
+    rm -f "$tmp"
+  fi
+  grn "  已安装命令：node-setup（以后直接运行 node-setup；更新脚本：node-setup update）"
+}
+
+do_update(){
+  grn "从 GitHub 更新脚本：$SELF_URL"
+  local tmp; tmp=$(mktemp)
+  fetch_self "$tmp" || { rm -f "$tmp"; exit 1; }
+  if [[ -f $SELF_BIN ]] && cmp -s "$tmp" "$SELF_BIN"; then
+    rm -f "$tmp"; grn "已经是最新版"; return 0
+  fi
+  install -m 755 "$tmp" "$SELF_BIN"; rm -f "$tmp"
+  grn "已更新 $SELF_BIN（Xray 默认版本：$(sed -n 's/^XRAY_DEFAULT_VERSION=\([^ ]*\).*/\1/p' "$SELF_BIN")）"
+  ylw "节点配置没有变；要让新版脚本的改动生效，运行 node-setup 重新部署（凭据默认沿用）"
+}
+
 # 不带任何参数运行时的主菜单
 main_menu(){
   echo
   grn "== node-setup.sh =="
   local c
-  choose c "要做什么？" 1 "部署 / 重新部署" "查看节点信息" "卸载" "退出"
+  choose c "要做什么？" 1 "部署 / 重新部署" "查看节点信息" "更新脚本" "卸载" "退出"
   case $c in
     1) CMD=install ;;
     2) CMD=info ;;
-    3) CMD=uninstall ;;
-    4) exit 0 ;;
+    3) CMD=update ;;
+    4) CMD=uninstall ;;
+    5) exit 0 ;;
   esac
 }
 
@@ -473,7 +523,7 @@ check_ports(){
   if [[ -n $busy ]]; then
     red "以下端口被其他程序占用（TCP 80 / $RPORT / $TARGET_PORT，UDP ${HPORT}）："
     echo "$busy"
-    die "请先停掉它（例如 systemctl disable --now caddy apache2），或运行 bash $0 uninstall 卸载其他代理，再重新运行。"
+    die "请先停掉它（例如 systemctl disable --now caddy apache2），或运行 node-setup uninstall（还没装成命令就用 bash $0 uninstall）卸载其他代理，再重新运行。"
   fi
 }
 
@@ -1091,7 +1141,7 @@ write_info(){
   } > "$INFO"
   chmod 600 "$INFO"
   echo; cat "$INFO"; echo
-  grn "已保存到 $INFO（随时运行 sudo bash $0 info 查看）"
+  grn "已保存到 $INFO（随时运行 node-setup info 查看）"
   echo
   ylw "还需要手动做的事："
   ylw "  • VPS 商家 / 云控制台安全组放行：TCP $RPORT$( (( NO_HY2 )) || echo "、UDP $HPORT")${HOP:+、UDP $HOP}$( (( HTTP01 )) && echo "、TCP 80（证书续期要用）" || echo "（TCP 80 可选，只用来跳转 https）")"
@@ -1255,7 +1305,7 @@ remove_self(){
     # acme.sh 为续期保存的 Cloudflare Token
     [[ -f /root/.acme.sh/account.conf ]] && sed -i '/^SAVED_CF_/d' /root/.acme.sh/account.conf
   fi
-  rm -rf "$SSL" "$WEB" "$WORKDIR" "$XHTTP_SOCK" /etc/sysctl.d/99-proxy-node.conf /usr/local/bin/proxy-node-cert-reload
+  rm -rf "$SSL" "$WEB" "$WORKDIR" "$XHTTP_SOCK" /etc/sysctl.d/99-proxy-node.conf /usr/local/bin/proxy-node-cert-reload "$SELF_BIN"
 }
 
 remove_nat(){
@@ -1423,6 +1473,7 @@ main(){
   fi
   preflight
   if [[ $CMD == uninstall ]]; then do_uninstall; exit 0; fi
+  if [[ $CMD == update ]]; then do_update; exit 0; fi
   [[ -n $DOMAIN ]] || interactive
   ask_token
   validate
@@ -1441,6 +1492,7 @@ main(){
   setup_firewall
   start_all
   write_info
+  install_self
 }
 
 # 允许被 source 进来单独测试函数
