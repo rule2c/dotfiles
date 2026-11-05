@@ -104,6 +104,20 @@ nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会�
 - **自定义规则：** sing-box 读不了 Clash 的 classical 列表。`Customized_Rules` 仓库的 Action 会把 `rule/*.list` 转成 `rule/sing-box/*.json`（sing-box 规则集源文件），配置里以 `format: source` 远程引用。列表改动推送后自动重新生成，不用改这里。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，转换时会跳过。
 - **geosite / geoip：** 用 MetaCubeX meta-rules-dat 的 `sing` 分支 `.srs` 规则集，与 mihomo 用的是同一份数据，经 `🚀 手动选择` 下载。
 
+## 广告拦截（mihomo / Shadowrocket / sing-box）
+
+三份客户端配置都按域名拦截广告和追踪，规则放在本地 / Tailscale 直连之后、美区锁定和 Google / AI 规则之前（geosite 的 `google` 本身含 Google 广告域名，放后面就拦不到）。
+
+| 客户端 | 规则源 | 关掉的方法 |
+|---|---|---|
+| mihomo | geosite `category-ads-all`（MetaCubeX，约 900 条） | 策略组 `🛑 广告拦截` 切到 DIRECT |
+| Shadowrocket | blackmatrix7 `AdvertisingLite`（DOMAIN-SET 约 3.7 万域名 + 关键词 / IP 规则） | 策略组 `🛑 广告拦截` 切到 DIRECT |
+| sing-box | 同 mihomo 的 `category-ads-all.srs`，路由动作 `reject` | 选择器切不了 reject 动作，只能删掉这条规则 |
+
+- **误杀：** 把域名写在拦截规则前面，配置里留了示例注释。
+- **Shadowrocket 用 Lite 版：** 完整版 `Advertising_Domain.list` 约 6 MB，容易让 iOS 网络扩展超内存。
+- **拦不到的：** 和正文同域名下发的广告（YouTube 视频广告、B 站 / 微博信息流、开屏广告等）需要 MITM 加重写，这里没有做。
+
 ## windows/move-user-folders.bat：把用户文件夹移到 D 盘
 
 一次性把 **桌面、下载、文档、图片、音乐、视频** 的位置改到 `D:\Users` 下：

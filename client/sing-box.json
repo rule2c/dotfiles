@@ -351,6 +351,12 @@
         "outbound": "🎯 全球直连"
       },
       {
+        "rule_set": [
+          "geosite-category-ads-all"
+        ],
+        "action": "reject"
+      },
+      {
         "type": "logical",
         "mode": "and",
         "rules": [
@@ -549,6 +555,14 @@
       }
     ],
     "rule_set": [
+      {
+        "tag": "geosite-category-ads-all",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ads-all.srs",
+        "download_detour": "🚀 手动选择",
+        "update_interval": "1d"
+      },
       {
         "tag": "geosite-private",
         "type": "remote",
