@@ -83,9 +83,8 @@
       "type": "selector",
       "tag": "🚀 手动选择",
       "outbounds": [
-        "🇺🇸 vmiss回落",
-        "🇯🇵 Oracle回落",
-        "🇺🇸 nosla回落"
+        "🇺🇸 美国节点",
+        "🇯🇵 日本节点"
       ],
       "interrupt_exist_connections": true
     },
@@ -142,8 +141,7 @@
       "type": "selector",
       "tag": "🤖 AI服务",
       "outbounds": [
-        "🇺🇸 vmiss回落",
-        "🇺🇸 nosla回落"
+        "🇺🇸 美国节点"
       ],
       "interrupt_exist_connections": true
     },
@@ -151,8 +149,7 @@
       "type": "selector",
       "tag": "📍 美区锁定",
       "outbounds": [
-        "🇺🇸 vmiss回落",
-        "🇺🇸 nosla回落"
+        "🇺🇸 美国节点"
       ],
       "interrupt_exist_connections": true
     },
@@ -170,6 +167,7 @@
       "type": "selector",
       "tag": "🎥 流媒体",
       "outbounds": [
+        "🇺🇸 美国节点",
         "🇺🇸 vmiss回落",
         "🇺🇸 nosla回落",
         "🇯🇵 日本节点"
@@ -180,6 +178,7 @@
       "type": "selector",
       "tag": "🎶 TikTok",
       "outbounds": [
+        "🇺🇸 美国节点",
         "🇺🇸 vmiss回落",
         "🇺🇸 nosla回落",
         "🇯🇵 日本节点"
@@ -214,7 +213,7 @@
       "type": "selector",
       "tag": "📢 谷歌FCM",
       "outbounds": [
-        "🚀 手动选择"
+        "🇬 谷歌服务"
       ],
       "interrupt_exist_connections": true
     },
@@ -222,8 +221,7 @@
       "type": "selector",
       "tag": "🇬 谷歌服务",
       "outbounds": [
-        "🇺🇸 vmiss回落",
-        "🚀 手动选择"
+        "🇺🇸 美国节点"
       ],
       "interrupt_exist_connections": true
     },
@@ -418,7 +416,7 @@
         "rule_set": [
           "geosite-youtube"
         ],
-        "outbound": "🎥 流媒体"
+        "outbound": "🇬 谷歌服务"
       },
       {
         "rule_set": [

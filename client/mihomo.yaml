@@ -81,10 +81,11 @@ proxy-providers:
 #   东京：xhttp → vision
 #   洛杉矶：reality → reality-xhttp → hysteria2 → cdn-xhttp → cdn-ws
 # 单个节点只出现在各自的回落组里；其他组只引用回落组，避免重复
+# 美国走哪台只在 🇺🇸 美国节点 里选，🚀 手动选择 只在 美国 / 日本 之间选，关联服务始终同一出口
 proxy-groups:
   - name: 🚀 手动选择
     type: select
-    proxies: [🇺🇸 vmiss回落, 🇯🇵 Oracle回落, 🇺🇸 nosla回落]
+    proxies: [🇺🇸 美国节点, 🇯🇵 日本节点]
 
   - name: 🎯 全球直连
     type: select
@@ -125,14 +126,15 @@ proxy-groups:
     type: select
     proxies: [🇯🇵 Oracle回落]
 
-  # 只用固定出口的回落组，哪台检测结果好就放第一位
+  # 出口一致：AI、美区锁定、Google 全家（含 YouTube、FCM）只引用 🇺🇸 美国节点，
+  # 在 🇺🇸 美国节点 里切 vmiss / nosla，这些组一起跟着切，不会被拆到两台机器
   - name: 🤖 AI服务
     type: select
-    proxies: [🇺🇸 vmiss回落, 🇺🇸 nosla回落]
+    proxies: [🇺🇸 美国节点]
 
   - name: 📍 美区锁定
     type: select
-    proxies: [🇺🇸 vmiss回落, 🇺🇸 nosla回落]
+    proxies: [🇺🇸 美国节点]
 
   - name: 🔴 Oracle服务
     type: select
@@ -140,17 +142,17 @@ proxy-groups:
 
   - name: 🎥 流媒体
     type: select
-    proxies: [🇺🇸 vmiss回落, 🇺🇸 nosla回落, 🇯🇵 日本节点]
+    proxies: [🇺🇸 美国节点, 🇺🇸 vmiss回落, 🇺🇸 nosla回落, 🇯🇵 日本节点]
 
   - name: 🎶 TikTok
     type: select
-    proxies: [🇺🇸 vmiss回落, 🇺🇸 nosla回落, 🇯🇵 日本节点]
+    proxies: [🇺🇸 美国节点, 🇺🇸 vmiss回落, 🇺🇸 nosla回落, 🇯🇵 日本节点]
 
   - {name: 💬 即时通讯, type: select, proxies: [🚀 手动选择]}
   - {name: 🌐 社交媒体, type: select, proxies: [🚀 手动选择]}
   - {name: 🚀 GitHub,   type: select, proxies: [🚀 手动选择]}
-  - {name: 📢 谷歌FCM,  type: select, proxies: [🚀 手动选择]}
-  - {name: 🇬 谷歌服务,  type: select, proxies: [🇺🇸 vmiss回落, 🚀 手动选择]}
+  - {name: 📢 谷歌FCM,  type: select, proxies: [🇬 谷歌服务]}
+  - {name: 🇬 谷歌服务,  type: select, proxies: [🇺🇸 美国节点]}
   - {name: 🍎 苹果服务,  type: select, proxies: [🎯 全球直连, 🚀 手动选择]}
   - {name: Ⓜ️ 微软服务, type: select, proxies: [🎯 全球直连, 🚀 手动选择]}
   - {name: 🎮 游戏平台,  type: select, proxies: [🎯 全球直连, 🚀 手动选择]}
@@ -208,11 +210,11 @@ rules:
 
   # 谷歌：子集放在大类前面
   - GEOSITE,googlefcm,📢 谷歌FCM
-  - GEOSITE,youtube,🎥 流媒体
+  - GEOSITE,youtube,🇬 谷歌服务   # YouTube 和 Google 账号同一出口
   - GEOSITE,google,🇬 谷歌服务
   - GEOIP,google,🇬 谷歌服务,no-resolve
 
-  # 流媒体 / TikTok
+  # 流媒体 / TikTok：彼此独立的服务，可以单独选别的出口
   - GEOSITE,netflix,🎥 流媒体
   - GEOSITE,disney,🎥 流媒体
   - GEOSITE,hbo,🎥 流媒体
