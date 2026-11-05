@@ -12,6 +12,8 @@ Personal utility scripts
 | Hysteria2 | UDP 443 + 端口跳跃 20000-40000 | TCP 被封或限速时使用 |
 | XHTTP / WS + TLS 经 Cloudflare | CDN 443 | VPS 的 IP 被墙后仍能用（可选） |
 
+所有线路出站都只用 IPv4（Xray `domainStrategy: UseIPv4`，Hysteria2 `mode: 4`；客户端直接给的 IPv6 地址会被拒绝，让应用回落到 IPv4），保证一台 VPS 只有一个出口 IP。
+
 ### 准备
 
 1. 一个**主域名**：Cloudflare 灰色云朵，A 记录指向 VPS。Reality 和 Hysteria2 共用这个域名。
@@ -87,7 +89,7 @@ nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会�
 2. 在这个文件里添加「脚本操作」，链接填：
 
    ```
-   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳Oracle回落🏷ℹ️oracle_arm-(xhttp|vision)🕳vmiss回落🏷ℹ️vmiss-🕳nosla回落🏷ℹ️nosla-
+   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳vmiss回落🏷ℹ️vmiss-🕳Oracle回落🏷ℹ️oracle_arm-(xhttp|vision)🕳nosla回落🏷ℹ️nosla-
    ```
 
    含义：读取名为 `all` 的组合订阅，按节点名把节点插进三个回落组（规则和 mihomo 的 `filter` 相同）。

@@ -909,6 +909,9 @@ install_xray(){
 
 write_xray(){
   grn "[5/9] 生成 Xray 配置"
+  # 出站只走 IPv4：VPS 有 IPv6 时，不同网站（甚至同一网站）会在 v4 / v6 两个出口 IP 之间跳，
+  # 地区和 ASN 判定可能不同。domainStrategy=UseIPv4 让域名只解析 A 记录；
+  # 客户端直接给的 IPv6 地址（不带域名）拒绝掉，让应用回落到 IPv4。Hysteria2 同样设成只用 IPv4
   local sniff='"sniffing": { "enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true }'
   local ws_inbound="" xhttp_inbound="" fallback=""
   # reality-xhttp：Vision 入站把非 Vision 流量 fallback 给 XHTTP 入站；cdn-xhttp：nginx 直接转给它
@@ -968,12 +971,13 @@ EOF
     }$xhttp_inbound$ws_inbound
   ],
   "outbounds": [
-    { "tag": "direct", "protocol": "freedom" },
+    { "tag": "direct", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4" } },
     { "tag": "block", "protocol": "blackhole" }
   ],
   "routing": {
     "rules": [
       { "ip": ["geoip:private", "geoip:cn"], "outboundTag": "block" },
+      { "ip": ["::/0"], "outboundTag": "block" },
       { "protocol": ["bittorrent"], "outboundTag": "block" }
     ]
   }
@@ -1007,6 +1011,13 @@ tls:
 auth:
   type: password
   password: $HY_PASS
+
+# 出站只用 IPv4，与 Xray 保持同一个出口 IP
+outbounds:
+  - name: v4
+    type: direct
+    direct:
+      mode: 4
 EOF
     if (( OBFS )); then
       cat <<EOF

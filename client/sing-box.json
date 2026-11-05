@@ -83,8 +83,8 @@
       "type": "selector",
       "tag": "🚀 手动选择",
       "outbounds": [
-        "🇯🇵 Oracle回落",
         "🇺🇸 vmiss回落",
+        "🇯🇵 Oracle回落",
         "🇺🇸 nosla回落"
       ],
       "interrupt_exist_connections": true
@@ -99,6 +99,14 @@
     },
     {
       "type": "urltest",
+      "tag": "🇺🇸 vmiss回落",
+      "outbounds": [],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "3m",
+      "tolerance": 10000
+    },
+    {
+      "type": "urltest",
       "tag": "🇯🇵 Oracle回落",
       "outbounds": [],
       "url": "https://www.gstatic.com/generate_204",
@@ -108,14 +116,6 @@
     {
       "type": "urltest",
       "tag": "🇺🇸 nosla回落",
-      "outbounds": [],
-      "url": "https://www.gstatic.com/generate_204",
-      "interval": "3m",
-      "tolerance": 10000
-    },
-    {
-      "type": "urltest",
-      "tag": "🇺🇸 vmiss回落",
       "outbounds": [],
       "url": "https://www.gstatic.com/generate_204",
       "interval": "3m",
