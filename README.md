@@ -103,16 +103,6 @@ nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会�
 - **自定义规则：** sing-box 读不了 Clash 的 classical 列表。`Customized_Rules` 仓库的 Action 会把 `rule/*.list` 转成 `rule/sing-box/*.json`（sing-box 规则集源文件），配置里以 `format: source` 远程引用。列表改动推送后自动重新生成，不用改这里。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，转换时会跳过。
 - **geosite / geoip：** 用 MetaCubeX meta-rules-dat 的 `sing` 分支 `.srs` 规则集，与 mihomo 用的是同一份数据，经 `🚀 手动选择` 下载。
 
-## client/shadowrocket.conf：AI 规则
-
-Shadowrocket 没有 GEOSITE，blackmatrix7 也只有 Bing、Claude、OpenAI、Gemini、Copilot 几个 AI 规则集。为了和 mihomo 的 `GEOSITE,category-ai-!cn` 走同一出口，配置里 `# BEGIN category-ai-!cn` 到 `# END category-ai-!cn` 之间补了这几个规则集没覆盖的域名（Perplexity、Grok、Mistral、Cursor、HuggingFace 等）。
-
-这段是脚本生成的，数据来自 MetaCubeX meta-rules-dat（和 mihomo、sing-box 用的是同一份）。想跟上游同步时运行：
-
-```bash
-python3 client/gen-shadowrocket-ai.py
-```
-
 ## windows/move-user-folders.bat：把用户文件夹移到 D 盘
 
 一次性把 **桌面、下载、文档、图片、音乐、视频** 的位置改到 `D:\Users` 下：
