@@ -140,11 +140,11 @@ proxy-groups:
 
   - name: 🎥 流媒体
     type: select
-    proxies: [🇺🇸 nosla回落, 🇺🇸 美国节点, 🇯🇵 日本节点]
+    proxies: [🇺🇸 vmiss回落, 🇺🇸 nosla回落, 🇯🇵 日本节点]
 
   - name: 🎶 TikTok
     type: select
-    proxies: [🇺🇸 nosla回落, 🇺🇸 美国节点, 🇯🇵 日本节点]
+    proxies: [🇺🇸 vmiss回落, 🇺🇸 nosla回落, 🇯🇵 日本节点]
 
   - {name: 💬 即时通讯, type: select, proxies: [🚀 手动选择]}
   - {name: 🌐 社交媒体, type: select, proxies: [🚀 手动选择]}

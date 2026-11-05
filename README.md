@@ -47,7 +47,7 @@ sudo bash vps/node-setup.sh info
 
 重复运行会沿用上次生成的 UUID、密钥和密码，客户端不用改。加 `--reset` 才会重新生成。
 
-Xray 默认固定为 **v26.9.9**，全部线路都用这个版本测试过。要换版本，用环境变量 `XRAY_VERSION=v26.x.x`；设为 `XRAY_VERSION=latest` 则安装最新版。
+Xray 默认固定为 **v26.7.28**，全部线路都用这个版本测试过（v26.9.9 起拒绝不带 X25519MLKEM768 的 Client Hello，Shadowrocket 连不上）。要换版本，用环境变量 `XRAY_VERSION=v26.x.x`；设为 `XRAY_VERSION=latest` 则安装最新版。
 
 ### 卸载（包括其他脚本装的代理）
 

@@ -170,8 +170,8 @@
       "type": "selector",
       "tag": "🎥 流媒体",
       "outbounds": [
+        "🇺🇸 vmiss回落",
         "🇺🇸 nosla回落",
-        "🇺🇸 美国节点",
         "🇯🇵 日本节点"
       ],
       "interrupt_exist_connections": true
@@ -180,8 +180,8 @@
       "type": "selector",
       "tag": "🎶 TikTok",
       "outbounds": [
+        "🇺🇸 vmiss回落",
         "🇺🇸 nosla回落",
-        "🇺🇸 美国节点",
         "🇯🇵 日本节点"
       ],
       "interrupt_exist_connections": true
