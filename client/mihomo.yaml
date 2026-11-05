@@ -84,11 +84,20 @@ proxy-providers:
 proxy-groups:
   - name: 🚀 手动选择
     type: select
-    proxies: [🇯🇵 Oracle回落, 🇺🇸 vmiss回落, 🇺🇸 nosla回落]
+    proxies: [🇺🇸 vmiss回落, 🇯🇵 Oracle回落, 🇺🇸 nosla回落]
 
   - name: 🎯 全球直连
     type: select
     proxies: [DIRECT]
+
+  # 洛杉矶 vmiss：5 条线路按顺序回落（同一出口 IP）
+  - name: 🇺🇸 vmiss回落
+    type: fallback
+    use: [substore]
+    filter: "(?i)vmiss-"
+    empty-fallback: REJECT
+    url: https://www.gstatic.com/generate_204
+    interval: 180
 
   # 东京 Oracle：XHTTP 优先，不通切 Vision
   - name: 🇯🇵 Oracle回落
@@ -104,15 +113,6 @@ proxy-groups:
     type: fallback
     use: [substore]
     filter: "(?i)nosla-"
-    empty-fallback: REJECT
-    url: https://www.gstatic.com/generate_204
-    interval: 180
-
-  # 洛杉矶 vmiss：5 条线路按顺序回落（同一出口 IP）
-  - name: 🇺🇸 vmiss回落
-    type: fallback
-    use: [substore]
-    filter: "(?i)vmiss-"
     empty-fallback: REJECT
     url: https://www.gstatic.com/generate_204
     interval: 180
