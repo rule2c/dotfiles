@@ -29,6 +29,24 @@ Personal utility scripts
 
 不用 Cloudflare 管理 DNS 时可以加 `--http01` 改用 80 端口验证，但证书会公开具体域名。
 
+### 没有自己的域名
+
+```bash
+sudo bash vps/node-setup.sh --no-domain
+```
+
+```bash
+sudo bash vps/node-setup.sh --target www.microsoft.com
+```
+
+交互式向导第一步也可以选"没有域名"。这个模式和有域名时的区别：
+
+- 节点地址直接用 VPS 的公网 IPv4，不需要 Cloudflare，也不装 nginx 和 acme.sh。
+- Reality 改成"偷别人"：target 和 SNI 是借用的网站（默认 `www.microsoft.com`，`--target` 可换）。部署前会检查它是否支持 TLS 1.3 + HTTP/2，不支持就停下。最好选和 VPS 同地区、不跳转的网站。
+- Hysteria2 用自签证书（10 年有效，CN 是借用的网站，重跑时沿用，指纹不变），伪装页反代借用的网站。分享链接带 `insecure=1&pinSHA256=指纹`，mihomo 配置带 `skip-cert-verify: true` 和 `fingerprint`。
+- 不能部署 CDN 线路（`cdn-xhttp` / `cdn-ws` 需要自己的域名）。VPS 的 IP 被墙后只能换 IP。
+- 以前用域名部署过的话，会移除本脚本的 nginx 站点和 Let's Encrypt 证书。
+
 ### 运行
 
 ```bash

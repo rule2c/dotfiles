@@ -12,6 +12,8 @@
 #    sudo bash node-setup.sh                                   # 菜单 + 部署向导（按编号选择）
 #    CF_Token=xxxx sudo -E bash node-setup.sh -d a.example.com -c cdn.example.com
 #    sudo bash node-setup.sh -d a.example.com -p 443 -u 443 --hop 20000-40000 -e me@example.com
+#    sudo bash node-setup.sh --no-domain                       # 没有自己的域名：Reality 借用别人的网站，Hysteria2 自签证书
+#    sudo bash node-setup.sh --target www.microsoft.com        # 同上，并指定借用的网站
 #    sudo bash node-setup.sh info                              # 重新显示节点信息
 #    node-setup / node-setup update                            # 部署后已装成命令；update 从 GitHub 更新脚本
 #                   仓库是私有的话，把只读 Token（Contents: Read）写进 /root/.gh-token，或用环境变量 GH_TOKEN
@@ -19,7 +21,10 @@
 #    sudo bash node-setup.sh uninstall --all -y                # 卸载全部代理组件，不询问
 #
 #  参数：
-#    -d, --domain   主域名（必填）。Cloudflare 灰色云朵，A 记录指向本机。Reality 和 Hysteria2 共用
+#    -d, --domain   主域名（有域名时必填）。Cloudflare 灰色云朵，A 记录指向本机。Reality 和 Hysteria2 共用
+#        --no-domain 没有自己的域名：节点地址用本机 IPv4，Reality 借用别人网站的证书（"偷别人"），
+#                   Hysteria2 用自签证书（链接里带 insecure=1 和证书指纹），不能部署 CDN，也不需要 Cloudflare
+#    -t, --target   无域名模式下 Reality 借用的网站，默认 www.microsoft.com（要支持 TLS 1.3 + HTTP/2）；给了它就等于 --no-domain
 #    -c, --cdn      CDN 域名（可选，不填就不部署 CDN）。Cloudflare 橙色云朵，A 记录指向本机
 #        --cf-token Cloudflare API Token（也可用环境变量 CF_Token，或运行时输入）。权限：
 #                   Zone → Zone → Read 和 Zone → DNS → Edit，范围只选你的域名
@@ -38,7 +43,7 @@
 #                     cdn-xhttp      XHTTP + TLS 经 Cloudflare CDN（需要 -c）
 #                     cdn-ws         WS + TLS 经 Cloudflare CDN（需要 -c；Xray 已标记 WS 为过时）
 #                   例：--proto reality,hy2      只要 Reality 和 Hysteria2
-#    -n, --name     节点名前缀，默认取主域名第一段
+#    -n, --name     节点名前缀，默认取主域名第一段（无域名模式默认 node）
 #    -r, --region   节点名前的国旗：两位国家代码，如 us（🇺🇸）、jp（🇯🇵）；默认按本机 IP 自动识别，none 不加
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
@@ -78,7 +83,7 @@ usage(){ awk 'NR>2 && /^# =====/{exit} NR>2{sub(/^# ?/,""); print}' "$0" 2>/dev/
 
 # ---------------------------------------------------------------- 参数 ----
 CMD=install DOMAIN="" CDN="" RPORT="" HPORT="" HOP="" EMAIL="" NODE="" REGION="" PROTO="" OBFS=0 NO_HY2=0 RESET=0 ALL=0 YES=0
-CF_TOKEN=${CF_Token:-} HTTP01=0
+CF_TOKEN=${CF_Token:-} HTTP01=0 NODOMAIN=0 RSNI=""
 
 parse_args(){
   while [[ $# -gt 0 ]]; do
@@ -95,6 +100,8 @@ parse_args(){
       -r|--region)   REGION=${2:?缺少国家代码}; shift ;;
       --cf-token)    CF_TOKEN=${2:?缺少 Token}; shift ;;
       --http01)      HTTP01=1 ;;
+      --no-domain)   NODOMAIN=1 ;;
+      -t|--target)   RSNI=${2:?缺少网站域名}; shift ;;
       --obfs)        OBFS=1 ;;
       --no-hy2)      NO_HY2=1 ;;
       --reset)       RESET=1 ;;
@@ -105,6 +112,9 @@ parse_args(){
     esac
     shift
   done
+  # 只给 --target 不给 -d：就是无域名模式
+  [[ -n $RSNI && -z $DOMAIN ]] && NODOMAIN=1
+  return 0
 }
 
 ask(){ # ask 变量名 提示 默认值
@@ -138,13 +148,28 @@ rand_port(){
 
 # 部署向导：能选的都用编号选，命令行已给的参数作为默认值
 interactive(){
-  [[ -t 0 ]] || die "缺少 -d 主域名（非交互环境请用参数传入，见 --help）"
+  [[ -t 0 ]] || die "缺少 -d 主域名（非交互环境请用参数传入；没有域名用 --no-domain，见 --help）"
   local c ans i ok
   echo
-  grn "== 部署向导：Reality 偷自己 + Hysteria2 + CDN 备用 =="
+  grn "== 部署向导：Reality + Hysteria2 + CDN 备用 =="
   echo
-  ylw "主域名：Cloudflare【灰色云朵】，A 记录指向本机"
-  while [[ -z $DOMAIN ]]; do ask DOMAIN "主域名" ""; done
+  choose c "有没有自己的域名？" 1 \
+    "有（推荐：Reality 偷自己 + 真证书，可选 Cloudflare CDN）" \
+    "没有（节点用本机 IP；Reality 借用别人的网站，Hysteria2 自签证书，不能用 CDN）"
+  if (( c == 1 )); then
+    NODOMAIN=0
+    echo
+    ylw "主域名：Cloudflare【灰色云朵】，A 记录指向本机"
+    while [[ -z $DOMAIN ]]; do ask DOMAIN "主域名" ""; done
+  else
+    NODOMAIN=1 DOMAIN="" CDN=""
+    echo
+    local tlist=(www.microsoft.com addons.mozilla.org www.lovelive-anime.jp)
+    choose c "Reality 借用哪个网站（要支持 TLS 1.3 + HTTP/2，最好和 VPS 在同一地区）：" 1 "${tlist[@]}" "自定义"
+    if (( c <= ${#tlist[@]} )); then RSNI=${tlist[c-1]}
+    else RSNI=""; while [[ -z $RSNI ]]; do ask RSNI "网站域名，如 www.example.com" ""; done
+    fi
+  fi
 
   # ---- 协议（多选）
   local names=(reality reality-xhttp hy2 cdn-xhttp cdn-ws)
@@ -153,25 +178,27 @@ interactive(){
                "Hysteria2                 UDP"
                "XHTTP + TLS 经 Cloudflare CDN（IP 被墙后仍可用）"
                "WS + TLS 经 Cloudflare CDN（兼容老客户端，Xray 已标记过时）")
+  local max=5; (( NODOMAIN )) && max=3      # 无域名不能用 CDN（4、5）
   local def="1 2 3 4 5"
+  (( NODOMAIN )) && def="1 2 3"
   if [[ -n $PROTO ]]; then
     def=""
-    for i in "${!names[@]}"; do [[ ",${PROTO,,}," == *",${names[i]},"* ]] && def+="$((i+1)) "; done
-    def=${def% }
-  elif (( NO_HY2 )); then def="1 2 4 5"
+    for ((i=0; i<max; i++)); do [[ ",${PROTO,,}," == *",${names[i]},"* ]] && def+="$((i+1)) "; done
+    def=${def% }; [[ -n $def ]] || def=1
+  elif (( NO_HY2 )); then def="1 2 4 5"; (( NODOMAIN )) && def="1 2"
   fi
   echo
   echo "选择要部署的协议（多个编号用空格分隔）："
-  for i in "${!names[@]}"; do printf '  %d) %-14s %s\n' $((i+1)) "${names[i]}" "${descs[i]}"; done
+  for ((i=0; i<max; i++)); do printf '  %d) %-14s %s\n' $((i+1)) "${names[i]}" "${descs[i]}"; done
   while :; do
     read -rp "请输入编号 [默认 $def]: " ans || true
     ans=${ans:-$def}; ans=${ans//,/ }
     PROTO="" ok=1
     for c in $ans; do
-      [[ $c =~ ^[1-5]$ ]] || { ok=0; break; }
+      [[ $c =~ ^[0-9]$ ]] && (( c >= 1 && c <= max )) || { ok=0; break; }
       [[ ",$PROTO," == *",${names[c-1]},"* ]] || PROTO+="${PROTO:+,}${names[c-1]}"
     done
-    (( ok )) || { red "  只能输入 1-5"; continue; }
+    (( ok )) || { red "  只能输入 1-$max"; continue; }
     [[ ",$PROTO," == *",reality,"* ]] || { red "  1) reality 必选（它是 TCP 入口，CDN 回源也经过它）"; continue; }
     break
   done
@@ -225,7 +252,8 @@ interactive(){
 
   # ---- 节点名 / 国旗
   echo
-  ask NODE "节点名前缀" "${NODE:-${DOMAIN%%.*}}"
+  local ndef=${DOMAIN%%.*}; [[ -n $ndef ]] || ndef=node
+  ask NODE "节点名前缀" "${NODE:-$ndef}"
   echo
   local rdef=1
   case ${REGION,,} in us) rdef=2 ;; jp) rdef=3 ;; none) rdef=4 ;; "") ;; *) rdef=5 ;; esac
@@ -245,13 +273,19 @@ interactive(){
     RESET=$(( c == 2 ))
   fi
 
-  echo
-  ask EMAIL "证书邮箱" "${EMAIL:-admin@$DOMAIN}"
+  if (( ! NODOMAIN )); then
+    echo
+    ask EMAIL "证书邮箱" "${EMAIL:-admin@$DOMAIN}"
+  fi
 
   # ---- 确认
   echo
   grn "== 确认 =="
-  echo "  主域名：$DOMAIN    Reality 端口：$RPORT"
+  if (( NODOMAIN )); then
+    echo "  无域名：节点地址用本机 IP，Reality 借用 $RSNI    Reality 端口：$RPORT"
+  else
+    echo "  主域名：$DOMAIN    Reality 端口：$RPORT"
+  fi
   echo "  协议：${PROTO//,/ }"
   [[ -n $CDN ]] && echo "  CDN 域名：$CDN"
   [[ $PROTO == *hy2* ]] && echo "  Hysteria2：UDP $HPORT，端口跳跃 ${HOP/off/关闭}，混淆 $( (( OBFS )) && echo 开 || echo 关)"
@@ -347,6 +381,7 @@ resolve_proto(){
     (( hy )) && NO_HY2=0 || NO_HY2=1
   fi
   if (( P_CX || P_CW )); then
+    (( ! NODOMAIN )) || die "无域名模式不能用 cdn-xhttp / cdn-ws（CDN 需要自己的域名）"
     [[ -n $CDN ]] || die "选了 cdn-xhttp / cdn-ws，但没给 CDN 域名（-c）"
   elif [[ -n $CDN ]]; then
     die "给了 CDN 域名 $CDN，但 --proto 里没有 cdn-xhttp / cdn-ws（不要 CDN 就去掉 -c）"
@@ -361,7 +396,7 @@ resolve_proto(){
 
 # Token 不放在命令行参数里也行：环境变量 CF_Token 或这里隐藏输入
 ask_token(){
-  (( HTTP01 )) && return 0
+  (( HTTP01 || NODOMAIN )) && return 0
   [[ -n $CF_TOKEN ]] && return 0
   [[ -t 0 ]] || die "缺少 Cloudflare API Token：用环境变量 CF_Token 或 --cf-token 传入（或加 --http01）"
   echo
@@ -374,13 +409,23 @@ ask_token(){
 
 validate(){
   local re='^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
-  [[ $DOMAIN =~ $re ]] || die "主域名格式不对：$DOMAIN"
-  [[ -z $CDN || $CDN =~ $re ]] || die "CDN 域名格式不对：$CDN"
-  [[ $DOMAIN != "$CDN" ]] || die "主域名和 CDN 域名必须不同（一个灰云、一个橙云）"
-  [[ -z $CF_TOKEN || $CF_TOKEN =~ ^[A-Za-z0-9_-]+$ ]] || die "Cloudflare Token 格式不对"
+  if (( NODOMAIN )); then
+    [[ -z $DOMAIN ]] || die "-d 和 --no-domain / --target 不能同时用"
+    [[ -z $CDN ]] || die "无域名模式不能部署 CDN（-c 需要自己的域名）"
+    RSNI=${RSNI:-www.microsoft.com}; RSNI=${RSNI,,}
+    [[ $RSNI =~ $re ]] || die "借用的网站域名格式不对：$RSNI"
+    NODE=${NODE:-node}
+  else
+    [[ -n $DOMAIN ]] || die "缺少 -d 主域名（没有域名用 --no-domain）"
+    [[ -z $RSNI ]] || die "-d 和 --target 不能同时用（--target 只用于无域名模式）"
+    [[ $DOMAIN =~ $re ]] || die "主域名格式不对：$DOMAIN"
+    [[ -z $CDN || $CDN =~ $re ]] || die "CDN 域名格式不对：$CDN"
+    [[ $DOMAIN != "$CDN" ]] || die "主域名和 CDN 域名必须不同（一个灰云、一个橙云）"
+    [[ -z $CF_TOKEN || $CF_TOKEN =~ ^[A-Za-z0-9_-]+$ ]] || die "Cloudflare Token 格式不对"
+    EMAIL=${EMAIL:-admin@$DOMAIN}
+    NODE=${NODE:-${DOMAIN%%.*}}
+  fi
   RPORT=${RPORT:-443}; HPORT=${HPORT:-443}; HOP=${HOP:-20000-40000}
-  EMAIL=${EMAIL:-admin@$DOMAIN}
-  NODE=${NODE:-${DOMAIN%%.*}}
   REGION=${REGION,,}
   [[ -z $REGION || $REGION == none || $REGION =~ ^[a-z]{2}$ ]] || die "国家代码不对：$REGION（两位字母，如 us、jp；none 不加国旗）"
   local p
@@ -395,6 +440,11 @@ validate(){
   fi
   resolve_proto
   (( NO_HY2 )) && { HOP=""; OBFS=0; }
+  # Reality 的 target / SNI：有域名偷自己（本机 nginx），无域名偷别人
+  if (( NODOMAIN )); then R_DEST="$RSNI:443" R_SNI=$RSNI
+  else R_DEST="127.0.0.1:$TARGET_PORT" R_SNI=$DOMAIN
+  fi
+  HY_SNI=$R_SNI HY_FP=""
   if [[ -n $CDN && $RPORT != 443 ]]; then
     ylw "注意：Reality 端口不是 443，Cloudflare 回源默认连 443。"
     ylw "      需要在 Cloudflare → Rules → Origin Rules 把 $CDN 的回源端口改成 $RPORT。"
@@ -443,7 +493,9 @@ install_deps(){
   grn "[1/9] 安装依赖"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq curl wget jq openssl nginx cron socat iptables ca-certificates >/dev/null
+  local -a pkgs=(curl wget jq openssl iptables ca-certificates)
+  (( NODOMAIN )) || pkgs+=(nginx cron socat)        # 无域名模式不需要 nginx 和 acme.sh
+  apt-get install -y -qq "${pkgs[@]}" >/dev/null
   systemctl enable --now cron >/dev/null 2>&1 || true
 }
 
@@ -485,6 +537,12 @@ cf_check(){
 
 check_dns(){
   IP=$(public_ip); [[ -n $IP ]] || die "获取不到本机公网 IPv4"
+  SERVER=${DOMAIN:-$IP}                      # 客户端连接的地址
+  if (( NODOMAIN )); then
+    grn "  无域名模式：节点地址用本机 IP $IP"
+    check_target
+    return 0
+  fi
   if (( ! HTTP01 )); then
     local z
     z=$(cf_zone "$DOMAIN") || die "Token 看不到 $DOMAIN 所在的域名（区域），检查 Token 的区域资源范围"
@@ -513,9 +571,22 @@ check_dns(){
   grn "  本机 $IP，域名解析检查通过"
 }
 
+# 无域名模式：Reality 借用的网站必须支持 TLS 1.3 + HTTP/2，否则握手特征对不上
+check_target(){
+  local out
+  out=$(timeout 10 openssl s_client -connect "$RSNI:443" -servername "$RSNI" -tls1_3 -alpn h2 </dev/null 2>&1 || true)
+  grep -qE '^(New|Reused), TLSv1\.3' <<<"$out" \
+    || die "$RSNI 连不上或不支持 TLS 1.3，Reality 不能借用它，请用 --target 换一个网站"
+  grep -q 'ALPN protocol: h2' <<<"$out" \
+    || die "$RSNI 不支持 HTTP/2，Reality 不能借用它，请用 --target 换一个网站"
+  grn "  $RSNI 支持 TLS 1.3 + HTTP/2，可以借用"
+}
+
 check_ports(){
   local busy
-  busy=$(ss -tlnpH 2>/dev/null | awk -v a=":80$" -v b=":$RPORT$" -v c=":$TARGET_PORT$" '$4~a||$4~b||$4~c' \
+  local p80=":80$" ptg=":$TARGET_PORT$"
+  (( NODOMAIN )) && p80='^$' ptg='^$'          # 无域名模式不用 nginx，只看 Reality 端口
+  busy=$(ss -tlnpH 2>/dev/null | awk -v a="$p80" -v b=":$RPORT$" -v c="$ptg" '$4~a||$4~b||$4~c' \
          | grep -vE '"(nginx|xray)"' || true)
   if (( ! NO_HY2 )); then
     busy+=$(ss -ulnpH 2>/dev/null | awk -v a=":$HPORT$" '$4~a' | grep -v '"hysteria"' || true)
@@ -654,6 +725,16 @@ fix_conflicts(){
 
 # ------------------------------------------------------------ nginx 站点 ----
 setup_site_http(){
+  if (( NODOMAIN )); then
+    grn "[2/9] 无域名模式：不需要伪装站点"
+    # 以前用域名部署过：本脚本的 nginx 站点已经没用了，移除
+    if [[ -e $NGX_SITE || -L /etc/nginx/sites-enabled/proxy-node ]]; then
+      rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE"
+      if systemctl is-active --quiet nginx 2>/dev/null; then nginx -t -q 2>/dev/null && systemctl reload nginx || true; fi
+      ylw "  移除上次部署的 nginx 站点"
+    fi
+    return 0
+  fi
   grn "[2/9] 配置伪装站点"
   mkdir -p "$WEB"
   [[ -f $WEB/index.html ]] || cat > "$WEB/index.html" <<'EOF'
@@ -832,7 +913,32 @@ acme_install(){ # acme_install 证书名 目录
   [[ -s $2/fullchain.crt ]] || die "证书文件不存在：$2/fullchain.crt"
 }
 
+# 无域名模式：Hysteria2 用自签证书（CN / SAN 是借用的网站）。重跑时沿用，证书指纹不变
+gen_self_cert(){
+  local dir=$SSL/self old
+  grn "[3/9] 生成 Hysteria2 自签证书（无域名模式，SNI：$HY_SNI）"
+  CERT_MAIN="" CERT_CDN="" HY_CERT_DIR=$dir
+  old=$(cat "$dir/sni" 2>/dev/null || true)
+  if (( RESET )) || [[ ! -s $dir/fullchain.crt || ! -s $dir/private.key || $old != "$HY_SNI" ]]; then
+    mkdir -p "$dir"; chmod 700 "$dir"
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+      -subj "/CN=$HY_SNI" -addext "subjectAltName=DNS:$HY_SNI" \
+      -keyout "$dir/private.key" -out "$dir/fullchain.crt" >/dev/null 2>&1 || die "生成自签证书失败"
+    echo "$HY_SNI" > "$dir/sni"
+    ylw "  已生成新证书（有效期 10 年）"
+  else
+    ylw "  沿用上次的自签证书（指纹不变，客户端不用改）"
+  fi
+  HY_FP=$(openssl x509 -in "$dir/fullchain.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')
+  echo "  证书 SHA256 指纹：$HY_FP"
+  # 以前用域名部署过：删掉 Let's Encrypt 证书和续期钩子，免得续期时把旧证书复制给 Hysteria2
+  rm -rf "$MAIN_DIR" "$CDN_DIR"
+  prune_old_certs
+  rm -f /usr/local/bin/proxy-node-cert-reload
+}
+
 issue_cert(){
+  (( NODOMAIN )) && { gen_self_cert; return 0; }
   grn "[3/9] 申请 Let's Encrypt 证书（$( (( HTTP01 )) && echo "HTTP 验证" || echo "DNS 验证，通配符")）"
   [[ -x $ACME ]] || curl -fsSL https://get.acme.sh | sh -s email="$EMAIL" >/dev/null
   $ACME --set-default-ca --server letsencrypt >/dev/null
@@ -855,7 +961,7 @@ EOF
   ylw "  主证书：${names[*]}"
   acme_issue "${names[@]}"
   acme_install "$CERT_MAIN" "$MAIN_DIR"
-  CERT_CDN="" ; CDN_CERT_DIR=$MAIN_DIR
+  CERT_CDN="" ; CDN_CERT_DIR=$MAIN_DIR HY_CERT_DIR=$MAIN_DIR
   if [[ -n $CDN ]]; then
     read -ra names <<<"$(cert_names "$CDN" "${ZONE_CDN:-}")"
     if [[ ${names[0]} == "$CERT_MAIN" ]]; then
@@ -960,8 +1066,8 @@ EOF
         "network": "raw",
         "security": "reality",
         "realitySettings": {
-          "target": "127.0.0.1:$TARGET_PORT",
-          "serverNames": [ "$DOMAIN" ],
+          "target": "$R_DEST",
+          "serverNames": [ "$R_SNI" ],
           "privateKey": "$PRIV",
           "shortIds": [ "$SID" ],
           "minClientVer": "0.0.0"
@@ -998,8 +1104,8 @@ install_hy2(){
   bash <(curl -fsSL https://get.hy2.sh/) >/dev/null
   id hysteria &>/dev/null || useradd -r -s /usr/sbin/nologin hysteria
   mkdir -p /etc/hysteria
-  install -m 640 -o root -g hysteria "$MAIN_DIR/fullchain.crt" /etc/hysteria/cert.crt
-  install -m 640 -o root -g hysteria "$MAIN_DIR/private.key"   /etc/hysteria/cert.key
+  install -m 640 -o root -g hysteria "$HY_CERT_DIR/fullchain.crt" /etc/hysteria/cert.crt
+  install -m 640 -o root -g hysteria "$HY_CERT_DIR/private.key"   /etc/hysteria/cert.key
   {
     cat <<EOF
 listen: :$HPORT
@@ -1027,6 +1133,16 @@ obfs:
   salamander:
     password: $OBFS_PASS
 EOF
+    elif (( NODOMAIN )); then
+      # 没有本机伪装站：探测者看到的是借用网站的内容
+      cat <<EOF
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://$HY_SNI/
+    rewriteHost: true
+EOF
     else
       cat <<EOF
 
@@ -1042,14 +1158,15 @@ EOF
 # -------------------------------------------------- 防火墙 / 端口跳跃 / BBR ----
 setup_firewall(){
   grn "[7/9] 防火墙、端口跳跃、BBR"
-  local udp="" hop=""
+  local udp="" hop="" tcp="80 $RPORT"
+  (( NODOMAIN )) && tcp=$RPORT
   (( NO_HY2 )) || udp=$HPORT
   [[ -n $HOP ]] && hop=${HOP/-/:}
   # 写成开机自动执行的脚本，不依赖 iptables-persistent（它会和 ufw 冲突）
   {
     echo '#!/bin/sh'
     echo '# 由 node-setup.sh 生成：放行端口 + Hysteria2 端口跳跃，开机自动执行'
-    printf 'TCP_PORTS="80 %s"\nUDP_PORTS="%s"\nHOP="%s"\nHOP_TO="%s"\n' "$RPORT" "$udp" "$hop" "$HPORT"
+    printf 'TCP_PORTS="%s"\nUDP_PORTS="%s"\nHOP="%s"\nHOP_TO="%s"\n' "$tcp" "$udp" "$hop" "$HPORT"
     cat <<'EOF'
 for ipt in iptables ip6tables; do
   command -v $ipt >/dev/null 2>&1 || continue
@@ -1100,12 +1217,15 @@ EOF
 # ------------------------------------------------------------------ 启动 ----
 start_all(){
   grn "[8/9] 启动服务"
-  write_nginx 1
-  nginx -t -q || die "nginx 配置测试失败"
-  systemctl reload nginx
+  local svcs=(xray)
+  if (( ! NODOMAIN )); then
+    write_nginx 1
+    nginx -t -q || die "nginx 配置测试失败"
+    systemctl reload nginx
+    svcs=(nginx xray)
+  fi
   systemctl enable xray >/dev/null 2>&1 || true
   systemctl restart xray
-  local svcs=(nginx xray)
   if (( ! NO_HY2 )); then
     systemctl enable hysteria-server >/dev/null 2>&1 || true
     systemctl restart hysteria-server
@@ -1118,8 +1238,8 @@ start_all(){
     else red "  ✗ $s 启动失败"; journalctl -u "$s" -n 30 --no-pager; exit 1; fi
   done
 
-  ylw "  自检：未授权连接应拿到 $DOMAIN 的 Let's Encrypt 证书"
-  timeout 8 openssl s_client -connect "127.0.0.1:$RPORT" -servername "$DOMAIN" </dev/null 2>/dev/null \
+  ylw "  自检：未授权连接应拿到 $R_SNI 的$( (( NODOMAIN )) && echo "真实" || echo " Let's Encrypt ")证书"
+  timeout 8 openssl s_client -connect "127.0.0.1:$RPORT" -servername "$R_SNI" </dev/null 2>/dev/null \
     | grep -E '^(subject|issuer)=' | sed 's/^/    /' || ylw "    （本地没拿到证书，请从外部再测）"
 }
 
@@ -1129,6 +1249,8 @@ write_info(){
   local hy_extra_yaml="" hy_extra_uri=""
   [[ -n $HOP ]] && { hy_extra_yaml+=", ports: $HOP, hop-interval: 30"; hy_extra_uri+="&mport=$HOP"; }
   (( OBFS )) && { hy_extra_yaml+=", obfs: salamander, obfs-password: $OBFS_PASS"; hy_extra_uri+="&obfs=salamander&obfs-password=$OBFS_PASS"; }
+  # 自签证书：跳过 CA 校验，但固定证书指纹，防中间人
+  [[ -n $HY_FP ]] && { hy_extra_yaml+=", skip-cert-verify: true, fingerprint: $HY_FP"; hy_extra_uri+="&insecure=1&pinSHA256=$HY_FP"; }
 
   [[ -n $REGION ]] || REGION=$(ip_country)
   set_flag "${REGION:-none}"
@@ -1136,16 +1258,16 @@ write_info(){
   local N="$FLAG$NODE" U="$FLAG_URI$NODE"
   {
     echo "===== Clash / mihomo（放到 proxies: 下）====="
-    echo "  - {name: \"$N-reality\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $DOMAIN, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
-    (( P_RX )) && echo "  - {name: \"$N-reality-xhttp\", type: vless, server: $DOMAIN, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $DOMAIN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
-    (( NO_HY2 )) || echo "  - {name: \"$N-hysteria2\", type: hysteria2, server: $DOMAIN, port: $HPORT, password: $HY_PASS, sni: $DOMAIN$hy_extra_yaml}"
+    echo "  - {name: \"$N-reality\", type: vless, server: $SERVER, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $R_SNI, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
+    (( P_RX )) && echo "  - {name: \"$N-reality-xhttp\", type: vless, server: $SERVER, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $R_SNI, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
+    (( NO_HY2 )) || echo "  - {name: \"$N-hysteria2\", type: hysteria2, server: $SERVER, port: $HPORT, password: $HY_PASS, sni: $HY_SNI$hy_extra_yaml}"
     (( P_CX )) && echo "  - {name: \"$N-cdn-xhttp\", type: vless, server: $CDN, port: 443, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $CDN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, host: $CDN, mode: auto}}"
     (( P_CW )) && echo "  - {name: \"$N-cdn-ws\", type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
     echo "===== 分享链接（v2rayN / NekoBox / Shadowrocket 等）====="
-    echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$U-reality"
-    (( P_RX )) && echo "vless://$UUID@$DOMAIN:$RPORT?encryption=none&security=reality&sni=$DOMAIN&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$U-reality-xhttp"
-    (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$DOMAIN:$HPORT/?sni=$DOMAIN$hy_extra_uri#$U-hysteria2"
+    echo "vless://$UUID@$SERVER:$RPORT?encryption=none&security=reality&sni=$R_SNI&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$U-reality"
+    (( P_RX )) && echo "vless://$UUID@$SERVER:$RPORT?encryption=none&security=reality&sni=$R_SNI&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$U-reality-xhttp"
+    (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$SERVER:$HPORT/?sni=$HY_SNI$hy_extra_uri#$U-hysteria2"
     if [[ -n $CDN ]]; then
       (( P_CX )) && echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$U-cdn-xhttp"
       (( P_CW )) && echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=ws&host=$CDN&path=%2F$WSPATH#$U-cdn-ws"
@@ -1156,12 +1278,20 @@ write_info(){
   grn "已保存到 $INFO（随时运行 node-setup info 查看）"
   echo
   ylw "还需要手动做的事："
-  ylw "  • VPS 商家 / 云控制台安全组放行：TCP $RPORT$( (( NO_HY2 )) || echo "、UDP $HPORT")${HOP:+、UDP $HOP}$( (( HTTP01 )) && echo "、TCP 80（证书续期要用）" || echo "（TCP 80 可选，只用来跳转 https）")"
-  ylw "  • Cloudflare：$DOMAIN 保持【灰色云朵】"
+  local p80="（TCP 80 可选，只用来跳转 https）"
+  (( HTTP01 )) && p80="、TCP 80（证书续期要用）"
+  (( NODOMAIN )) && p80=""
+  ylw "  • VPS 商家 / 云控制台安全组放行：TCP $RPORT$( (( NO_HY2 )) || echo "、UDP $HPORT")${HOP:+、UDP $HOP}$p80"
+  if (( NODOMAIN )); then
+    ylw "  • 无域名模式：Reality 借用 $R_SNI；Hysteria2 是自签证书，链接里已带 insecure=1 和证书指纹"
+    ylw "    （客户端不认 pinSHA256 时只是跳过证书校验；IP 换了要重新导入节点）"
+  else
+    ylw "  • Cloudflare：$DOMAIN 保持【灰色云朵】"
+  fi
   if [[ -n $CDN ]]; then
     ylw "  • Cloudflare：$CDN 保持【橙色云朵】，SSL/TLS 设为 Full (strict)$( (( P_CW )) && echo "，Network 里 WebSockets 保持开启")"
   fi
-  (( HTTP01 )) || ylw "  • Cloudflare Token 已保存在 /root/.acme.sh/account.conf 供自动续期；卸载时会一并删除"
+  (( HTTP01 || NODOMAIN )) || ylw "  • Cloudflare Token 已保存在 /root/.acme.sh/account.conf 供自动续期；卸载时会一并删除"
 
   ylw "  • 客户端务必开启国内直连分流（服务端屏蔽了 geoip:cn，回国流量会失败）"
 }
@@ -1486,7 +1616,7 @@ main(){
   preflight
   if [[ $CMD == uninstall ]]; then do_uninstall; exit 0; fi
   if [[ $CMD == update ]]; then do_update; exit 0; fi
-  [[ -n $DOMAIN ]] || interactive
+  [[ -n $DOMAIN ]] || (( NODOMAIN )) || interactive
   ask_token
   validate
   mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
