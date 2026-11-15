@@ -54,13 +54,15 @@
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
 #    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
-#    Xray 默认固定为 v26.7.28；环境变量 XRAY_VERSION=v26.x.x 可换成别的版本，XRAY_VERSION=latest 安装最新版
+#    Xray 默认安装最新版；环境变量 XRAY_VERSION=v26.x.x 可固定成某个版本（如 v26.7.28）
 # =============================================================================
 set -Eeuo pipefail
-# v26.7.28 + minClientVer 0.0.0：mihomo 和 Shadowrocket 的 Reality 都实测能连
-#   - v26.9.9 起拒绝不带 X25519MLKEM768 的 Client Hello，Shadowrocket 无法开启，连不上
-#   - v26.7.28 默认 minClientVer=26.3.27，mihomo 上报版本 1.8.2 会被拒，所以配置里显式写 0.0.0
-XRAY_DEFAULT_VERSION=v26.7.28
+# 默认装最新版 Xray。两点要知道：
+#   - v26.9.9 起拒绝不带 X25519MLKEM768 的 Client Hello：客户端的 uTLS 指纹要选带它的
+#     （Shadowrocket 选 Chrome / Chrome140 / Safari / Firefox，不能用 Chrome120 等旧指纹；mihomo 用新版内核）。
+#     客户端太旧连不上时，用 XRAY_VERSION=v26.7.28 重跑，那一版没有这个限制
+#   - Xray 默认的 minClientVer 会拒掉 mihomo（上报版本 1.8.2），所以配置里显式写 0.0.0
+XRAY_DEFAULT_VERSION=latest
 # 任何一步失败都打印位置，不再静默退出
 trap 'rc=$?; printf "\033[31m脚本出错退出：第 %s 行，命令：%s（退出码 %s）\033[0m\n" "$LINENO" "$BASH_COMMAND" "$rc" >&2; exit $rc' ERR
 
@@ -1011,11 +1013,16 @@ EOF
       printf '    %s 1;\n' $CF_V4; echo "}"; } >> "$NGX_SITE"
   fi
 
+  # 后量子密钥交换 X25519MLKEM768：新版 Chrome / Firefox 访问真实网站时都会协商它，伪装站也支持才像；
+  # Reality 客户端的指纹带它时也能和这里对上。需要 OpenSSL 3.5 以上，旧系统自动不加
+  local curves=X25519:prime256v1:secp384r1
+  (( with_tls )) && [[ ${2:-} != nopq ]] && ver_ge "$(openssl version 2>/dev/null | awk '{print $2}')" 3.5.0 \
+    && curves=X25519MLKEM768:$curves
   local common
   common=$(cat <<EOF
 $realip
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ecdh_curve X25519:prime256v1:secp384r1;
+    ssl_ecdh_curve $curves;
     ssl_session_timeout 1d;
     ssl_session_cache shared:PROXYNODE:10m;
     add_header Strict-Transport-Security "max-age=31536000" always;
@@ -1269,7 +1276,7 @@ install_xray(){
   grn "[4/9] 安装 Xray $( [[ $want == latest ]] && echo "（最新版）" || echo "$want")"
   local url=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
   if [[ $want == latest ]]; then
-    bash -c "$(curl -fsSL $url)" @ install >/dev/null
+    bash -c "$(curl -fsSL $url)" @ install >/dev/null || die "Xray 最新版安装失败（GitHub 连不上？）"
   else
     bash -c "$(curl -fsSL $url)" @ install --version "$want" >/dev/null \
       || die "Xray $want 安装失败（版本号是否存在？见 https://github.com/XTLS/Xray-core/releases）"
@@ -1478,7 +1485,11 @@ start_all(){
   local svcs=(xray)
   if (( ! NODOMAIN )); then
     write_nginx 1
+    if ! nginx -t -q 2>/dev/null && grep -q X25519MLKEM768 "$NGX_SITE"; then
+      write_nginx 1 nopq        # nginx 链接的 OpenSSL 和命令行的不是同一个版本
+    fi
     nginx -t -q || die "nginx 配置测试失败"
+    grep -q X25519MLKEM768 "$NGX_SITE" && echo "  伪装站已开启后量子密钥交换 X25519MLKEM768"
     systemctl reload nginx
     svcs=(nginx xray)
   fi
