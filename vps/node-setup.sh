@@ -29,6 +29,8 @@
 #                   找支持 TLS 1.3 + HTTP/2 + X25519、证书有效、不跳转到别的域名的网站（SNI 和 IP 在同一机房）
 #                   给了它就等于 --no-domain；不要用 www.microsoft.com 这类被大量使用的网站
 #    -c, --cdn      CDN 域名（可选，不填就不部署 CDN）。Cloudflare 橙色云朵，A 记录指向本机
+#                   有 CDN 域名时自动隐藏源站：只有 Cloudflare 的 IP 能以这个域名回源，
+#                   别人拿它当 SNI 直连本机 IP 会被拒绝握手（需要 nginx 的 stream 模块）
 #        --cf-token Cloudflare API Token（也可用环境变量 CF_Token，或运行时输入）。权限：
 #                   Zone → Zone → Read 和 Zone → DNS → Edit，范围只选你的域名
 #                   用来做 DNS 验证申请【通配符证书】（*.example.com），证书透明度日志里看不到具体子域名
@@ -75,7 +77,13 @@ SELF_BIN=/usr/local/bin/node-setup
 SELF_URL=${NODE_SETUP_URL:-https://raw.githubusercontent.com/rule2c/personal-scripts/main/vps/node-setup.sh}
 GH_TOKEN_FILE=/root/.gh-token
 XHTTP_SOCK=/dev/shm/xray-xhttp.sock
-TARGET_PORT=18443          # 本机 nginx HTTPS，只监听 127.0.0.1，是 Reality 的 target
+TARGET_PORT=18443          # 本机 nginx，只监听 127.0.0.1，是 Reality 的 target
+HTTPS_PORT=18444           # 有 CDN 时：18443 换成 stream 分流层，HTTPS 站点挪到这里
+REJECT_PORT=18445          # 有 CDN 时：不是 Cloudflare 来的 CDN 域名连接转到这里，握手被拒
+NGX_STREAM=/etc/nginx/modules-enabled/99-proxy-node-stream.conf   # stream{} 得放在 http{} 外面
+HIDE=0                     # 1 = 启用 CDN 源站隐藏（probe_stream 决定）
+# Cloudflare 回源 IPv4 段（部署时会尝试从 cloudflare.com/ips-v4 更新，拿不到就用这份）
+CF_V4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
 WS_PORT=10001              # CDN WS 入站，只监听 127.0.0.1
 
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
@@ -142,7 +150,7 @@ choose(){
 }
 
 # rand_port tcp|udp：40001-60000 里挑一个本机没被占用的端口
-# （避开默认端口跳跃范围 20000-40000，以及本脚本内部用的 10001 / 18443）
+# （避开默认端口跳跃范围 20000-40000，以及本脚本内部用的 10001 / 18443-18445）
 rand_port(){
   local p flag=-tln; [[ $1 == udp ]] && flag=-uln
   while :; do
@@ -448,7 +456,8 @@ validate(){
   for p in "$RPORT" "$HPORT"; do
     [[ $p =~ ^[0-9]+$ ]] && (( p >= 1 && p <= 65535 )) || die "端口不对：$p"
   done
-  [[ $RPORT != 80 && $RPORT != "$TARGET_PORT" ]] || die "Reality 端口不能用 80 / $TARGET_PORT"
+  [[ $RPORT != 80 && $RPORT != "$TARGET_PORT" && $RPORT != "$HTTPS_PORT" && $RPORT != "$REJECT_PORT" ]] \
+    || die "Reality 端口不能用 80 / $TARGET_PORT-$REJECT_PORT"
   [[ $HOP == off ]] && HOP=""
   if [[ -n $HOP ]]; then
     [[ $HOP =~ ^([0-9]+)-([0-9]+)$ ]] && (( BASH_REMATCH[1] < BASH_REMATCH[2] && BASH_REMATCH[2] <= 65535 )) \
@@ -515,6 +524,8 @@ install_deps(){
   local -a pkgs=(curl wget jq openssl iptables ca-certificates)
   (( NODOMAIN )) || pkgs+=(nginx cron socat)        # 无域名模式不需要 nginx 和 acme.sh
   apt-get install -y -qq "${pkgs[@]}" >/dev/null
+  # CDN 源站隐藏要用 nginx 的 stream 模块；装不上不算失败，probe_stream 会退回旧方式
+  [[ -z $CDN ]] || apt-get install -y -qq libnginx-mod-stream >/dev/null 2>&1 || true
   systemctl enable --now cron >/dev/null 2>&1 || true
 }
 
@@ -685,7 +696,7 @@ select_target(){
 
 check_ports(){
   local busy
-  local p80=":80$" ptg=":$TARGET_PORT$"
+  local p80=":80$" ptg=":($TARGET_PORT|$HTTPS_PORT|$REJECT_PORT)$"
   (( NODOMAIN )) && p80='^$' ptg='^$'          # 无域名模式不用 nginx，只看 Reality 端口
   busy=$(ss -tlnpH 2>/dev/null | awk -v a="$p80" -v b=":$RPORT$" -v c="$ptg" '$4~a||$4~b||$4~c' \
          | grep -vE '"(nginx|xray)"' || true)
@@ -693,7 +704,7 @@ check_ports(){
     busy+=$(ss -ulnpH 2>/dev/null | awk -v a=":$HPORT$" '$4~a' | grep -v '"hysteria"' || true)
   fi
   if [[ -n $busy ]]; then
-    red "以下端口被其他程序占用（TCP 80 / $RPORT / $TARGET_PORT，UDP ${HPORT}）："
+    red "以下端口被其他程序占用（TCP 80 / $RPORT / $TARGET_PORT-$REJECT_PORT，UDP ${HPORT}）："
     echo "$busy"
     die "请先停掉它（例如 systemctl disable --now caddy apache2），或运行 node-setup uninstall（还没装成命令就用 bash $0 uninstall）卸载其他代理，再重新运行。"
   fi
@@ -760,13 +771,13 @@ nginx_listen_conflicts(){
       flags=" ${tok[*]:2} "
       if [[ $flags == *" quic "* || $flags == *" udp "* ]]; then
         (( ! NO_HY2 )) && [[ $port == "$HPORT" ]] && bad[$f]=1
-      elif [[ $port == "$RPORT" || $port == "$TARGET_PORT" ]]; then
+      elif [[ $port == "$RPORT" || $port == "$TARGET_PORT" || $port == "$HTTPS_PORT" || $port == "$REJECT_PORT" ]]; then
         bad[$f]=1
       fi
     done
   done <<<"$dump"
   for f in "${!bad[@]}"; do
-    [[ $f == "$NGX_SITE" || $f == "$ours_link" ]] || echo "$f"
+    [[ $f == "$NGX_SITE" || $f == "$ours_link" || $f == "$NGX_STREAM" ]] || echo "$f"
   done
 }
 
@@ -790,7 +801,7 @@ fix_conflicts(){
   # 1) nginx 站点
   while read -r f; do
     [[ -n $f ]] || continue
-    [[ $f == /etc/nginx/nginx.conf ]] && die "/etc/nginx/nginx.conf 里有 server 监听端口 $RPORT / $TARGET_PORT，请手动删掉那段后重跑"
+    [[ $f == /etc/nginx/nginx.conf ]] && die "/etc/nginx/nginx.conf 里有 server 监听端口 $RPORT / $TARGET_PORT-$REJECT_PORT，请手动删掉那段后重跑"
     mkdir -p "$backup"; found=1
     if [[ -L $f ]]; then cp -L "$f" "$backup/$(basename "$f")"; rm -f "$f"
     else mv "$f" "$backup/"; fi
@@ -831,8 +842,8 @@ setup_site_http(){
     grn "[2/9] 无域名模式：不需要 nginx（Hysteria2 不开混淆时用本地伪装页）"
     write_web_index
     # 以前用域名部署过：本脚本的 nginx 站点已经没用了，移除
-    if [[ -e $NGX_SITE || -L /etc/nginx/sites-enabled/proxy-node ]]; then
-      rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE"
+    if [[ -e $NGX_SITE || -e $NGX_STREAM || -L /etc/nginx/sites-enabled/proxy-node ]]; then
+      rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE" "$NGX_STREAM"
       if systemctl is-active --quiet nginx 2>/dev/null; then nginx -t -q 2>/dev/null && systemctl reload nginx || true; fi
       ylw "  移除上次部署的 nginx 站点"
     fi
@@ -848,26 +859,126 @@ setup_site_http(){
   write_nginx 0
   ln -sf "$NGX_SITE" /etc/nginx/sites-enabled/proxy-node
   nginx -t -q
+  probe_stream
   systemctl enable nginx >/dev/null 2>&1 || true
   systemctl restart nginx || { journalctl -u nginx -n 15 --no-pager; die "nginx 启动失败"; }
 }
 
+# CDN 源站隐藏：别人拿 CDN 域名当 SNI 直接连 VPS 的 IP，本来能拿到 CDN 域名的证书，
+# 等于确认"这个 CDN 域名的源站就是这台机器"。做法：
+#   Xray(Reality, xver=1) 把未授权连接连同真实来源 IP（PROXY protocol）交给 nginx stream，
+#   stream 读 SNI：SNI 是 CDN 域名、来源又不是 Cloudflare → 转到只会拒绝握手的端口，
+#   表现和连任何不存在的域名完全一样；其余照常交给 HTTPS 站点。
+# 只在有 CDN 域名时启用；nginx 没有 stream 模块或版本太旧就退回旧方式（不隐藏）并提示。
+probe_stream(){
+  HIDE=0
+  [[ -n $CDN ]] || return 0
+  local ngv why=""
+  ngv=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p)
+  if ! ver_ge "$ngv" 1.19.4; then why="nginx $ngv 太旧（需要 1.19.4 以上）"
+  elif ! grep -qE '^[^#]*include[[:space:]]+/etc/nginx/modules-enabled/' /etc/nginx/nginx.conf; then
+    why="/etc/nginx/nginx.conf 没有加载 modules-enabled 目录"
+  else
+    mkdir -p "${NGX_STREAM%/*}"
+    printf 'stream {\n  geo $proxy_protocol_addr $pn_cf { default 0; }\n  map "$pn_cf:$ssl_preread_server_name" $pn_backend { default 127.0.0.1:%s; }\n  server { listen 127.0.0.1:%s proxy_protocol; set_real_ip_from 127.0.0.1; ssl_preread on; proxy_protocol on; proxy_pass $pn_backend; }\n}\n' \
+      "$HTTPS_PORT" "$TARGET_PORT" > "$NGX_STREAM"
+    nginx -t -q 2>/dev/null || why="nginx 没有可用的 stream 模块（试试 apt-get install libnginx-mod-stream），或已有别的 stream 配置"
+    rm -f "$NGX_STREAM"
+  fi
+  if [[ -n $why ]]; then
+    ylw "  ⚠ 不启用 CDN 源站隐藏：$why"
+    ylw "    CDN 线路照常可用，但拿 $CDN 当 SNI 直连本机 IP 能看到它的证书"
+    return 0
+  fi
+  HIDE=1
+  local got
+  got=$(curl -fsS --max-time 8 https://www.cloudflare.com/ips-v4 2>/dev/null | tr -s '[:space:]' ' ' || true)
+  if [[ $got =~ ^([0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}\ ?){8,40}$ ]]; then CF_V4=${got% }
+  else ylw "  拿不到最新的 Cloudflare IP 段，用脚本内置的列表"; fi
+  grn "  启用 CDN 源站隐藏（只有 Cloudflare 能以 $CDN 回源）"
+}
+
 # 伪装页：nginx 和 Hysteria2（masquerade）共用
+# 已有页面就沿用（你自己放的站点也不会被覆盖）；--reset 或旧版那张固定的 "Field Notes" 页面会重新生成
 write_web_index(){
   mkdir -p "$WEB"
-  [[ -f $WEB/index.html ]] || cat > "$WEB/index.html" <<'EOF'
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Field Notes</title>
-<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:80px auto;padding:0 16px;color:#222;line-height:1.6}</style>
-</head><body><h1>Field Notes</h1><p>Occasional notes on photography and travel. More posts coming soon.</p></body></html>
-EOF
+  local f=$WEB/index.html
+  if [[ -s $f ]] && (( ! RESET )) && ! grep -q '<title>Field Notes</title>' "$f"; then return 0; fi
+  gen_site > "$f.tmp" && mv -f "$f.tmp" "$f"
+  chmod 644 "$f"
+}
+
+# 每台机器随机生成一个小博客首页：站名 × 主题 × 文章 × 版式 × 字体 × 配色。
+# 所有部署都用同一张页面的话，页面本身就成了能跨机器识别的指纹
+gen_site(){
+  local -a adj=(Quiet Small Slow Northern Paper Copper Late Open Plain Second Low Far Salt Green Winter Morning Narrow Borrowed Loose Stone Amber Hollow Tin Idle)
+  local -a noun=(Harbor Notebook Orchard Ledger Kitchen Lantern Window Compass Margin Bench Field Almanac Porch Thread Garden Signal Shelf Meadow Atlas Workshop Kettle Trail Gable Pantry)
+  local -a fonts=('system-ui,-apple-system,"Segoe UI",sans-serif' 'Georgia,"Times New Roman",serif' '"Helvetica Neue",Arial,sans-serif'
+                  'ui-monospace,Menlo,Consolas,monospace' 'Charter,"Bitstream Charter",Cambria,serif' 'Verdana,Geneva,sans-serif')
+  local -a themes=('#ffffff|#222222|#666666' '#fafaf7|#2b2b2b|#77736a' '#f4f1ea|#33302a|#857c6c' '#16181c|#d8d8d8|#8a8f98' '#fdfdfd|#1a1a1a|#707070' '#eef1f4|#243040|#6b7a8c')
+  # 主题|一句话简介|文章标题::摘要|...
+  local -a topics=(
+"photography|Notes on film, light and long walks with a camera.|First roll through the old rangefinder::Twelve frames, three keepers, and a light leak I have decided to like.|Scanning negatives at home::A flatbed, a cardboard mask and more patience than I expected to need.|Shooting the harbor at dawn::Cold hands and flat light, right up until the sun cleared the cranes.|Why I stopped carrying a zoom::One lens, fewer decisions, and noticeably better pictures.|A year of contact sheets::What looking at every frame taught me about what I keep missing.|Fog on the ridge road::Forty minutes of nothing, then two minutes worth the drive."
+"cooking|A home kitchen logbook: what worked, what did not, and what we ate anyway.|Sourdough, attempt nine::Finally an open crumb. The secret was mostly leaving it alone.|Sunday stock from scraps::A freezer bag of trimmings turns into the best soup base of the month.|Getting cast iron properly seasoned::Thin coats, high heat, and ignoring most of the internet.|Quick pickles for people in a hurry::Ten minutes of work and the fridge does the rest.|The lentil soup I keep coming back to::Cheap, forgiving, and better on the second day.|Notes on a failed custard::Scrambled eggs with ambition. Here is what went wrong."
+"cycling|Routes, repairs and the occasional wrong turn.|The long way round the reservoir::Sixty kilometers, one puncture and a very good bakery at the halfway point.|Rebuilding a rear wheel::Thirty-two spokes and an evening I will not get back, but it runs true.|Riding through the first frost::What to wear when the forecast lies to you.|A better way to pack a saddle bag::Heavy things low, snacks within reach, and nothing that rattles.|Gravel after rain::Slow, filthy and easily the best ride of the autumn.|Chain wear and when to care::A two-dollar tool that saved me a cassette."
+"gardening|A small plot, a lot of weather, and notes for next year.|Starting tomatoes too early again::Leggy seedlings and the windowsill that was never bright enough.|What the slugs left behind::A census of the lettuce bed after a wet week.|Building a cold frame from an old window::Two afternoons, some scrap timber and one cracked pane.|Compost, year two::It finally smells like soil instead of regret.|Saving seed from the best beans::Label everything. I mean everything.|The first frost list::What comes in, what gets covered and what is on its own."
+"books|Reading notes, mostly from the back of the shelf.|Rereading a book I hated at nineteen::It turns out the book was fine and the problem was me.|Notes from a month of short stories::One a night, and what stuck after the lights went out.|A used bookshop inventory::Six paperbacks, one map, and a receipt from 1987 used as a bookmark.|On abandoning books without guilt::Life is short and the pile is tall.|Marginalia from a borrowed copy::Arguing with a stranger in pencil.|The best thing I read this winter::A slim novel about a lighthouse and not much else."
+"woodworking|Shop notes: small projects, sharp tools, honest mistakes.|A bench hook in an afternoon::The simplest jig in the shop and the one I reach for most.|Sharpening without the mystery::Two stones, a strop and ten minutes.|Dovetails, practice set four::Gaps you could park a bicycle in, but fewer than last time.|Rescuing a flea market plane::Rust, a cracked tote and a very satisfying first shaving.|Finishing with oil and wax::Slow to build, easy to repair, pleasant to touch.|What I learned from a wobbly stool::Measure the legs after you cut them, not just before."
+"hiking|Trail notes and weather reports from the nearest hills.|Up the north path before sunrise::Headlamp, frost on the heather and the summit to myself.|Boots, two hundred miles later::What held up, what did not and what I would buy again.|A ridge walk in bad visibility::Compass work, cold sandwiches and one very surprised sheep.|Packing lighter for day trips::Everything I stopped carrying and have not missed.|The river crossing that was not on the map::A detour, wet socks and a better route home.|Autumn on the old drove road::Larch gold, long shadows and nobody else for miles."
+"coffee|Brewing notes from a small counter and a hand grinder.|Dialing in a new bag::Three brews too sour, one too bitter, then exactly right.|A week with the pour-over kettle::Slower mornings and a noticeably cleaner cup.|Cold brew without special equipment::A jar, a sieve and twelve hours of doing nothing.|Why my grinder needed cleaning::Stale oils, a small brush and a surprising improvement.|Water matters more than I thought::Same beans, different tap, completely different coffee.|Notes on a light roast::Tea-like, bright and gone before I could decide if I liked it."
+  )
+  local name topic tagline font bg fg mute hue w lay i n=0 year
+  local -a parts posts pt=() ps=() pd=()
+  name="${adj[RANDOM % ${#adj[@]}]} ${noun[RANDOM % ${#noun[@]}]}"
+  IFS='|' read -ra parts <<<"${topics[RANDOM % ${#topics[@]}]}"
+  topic=${parts[0]} tagline=${parts[1]}
+  mapfile -t posts < <(printf '%s\n' "${parts[@]:2}" | shuf -n $((RANDOM % 3 + 3)))
+  local days=$((RANDOM % 20 + 3))
+  for i in "${posts[@]}"; do
+    pt+=("${i%%::*}") ps+=("${i#*::}")
+    pd+=("$(LC_ALL=C date -d "-$days days" '+%B %-d, %Y' 2>/dev/null || echo "")")
+    days=$((days + RANDOM % 60 + 9))
+  done
+  n=${#pt[@]}
+  font=${fonts[RANDOM % ${#fonts[@]}]}
+  IFS='|' read -r bg fg mute <<<"${themes[RANDOM % ${#themes[@]}]}"
+  hue=$((RANDOM % 360)) w=$((RANDOM % 5 * 40 + 600)) lay=$((RANDOM % 4))
+  year=$(date +%Y)
+  local css="body{margin:0;background:$bg;color:$fg;font-family:$font;line-height:1.$((RANDOM % 4 + 5))}a{color:hsl($hue,45%,45%);text-decoration:none}a:hover{text-decoration:underline}.wrap{max-width:${w}px;margin:0 auto;padding:$((RANDOM % 5 * 8 + 32))px 20px}.meta,footer{color:$mute;font-size:.85em}"
+  echo '<!doctype html>'
+  echo "<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+  echo "<title>$name</title><meta name=\"description\" content=\"$tagline\">"
+  case $lay in
+    0)  # 单栏文章列表
+      echo "<style>${css}h1{margin-bottom:0}article{margin:2.2em 0}h2{margin:0 0 .2em;font-size:1.25em}</style></head><body><div class=\"wrap\">"
+      echo "<header><h1>$name</h1><p class=\"meta\">$tagline</p></header><main>"
+      for ((i=0; i<n; i++)); do echo "<article><h2>${pt[i]}</h2><div class=\"meta\">${pd[i]}</div><p>${ps[i]}</p></article>"; done
+      echo "</main><footer><p>&copy; $year $name</p></footer></div></body></html>" ;;
+    1)  # 顶部导航 + 标题列表 + 关于
+      echo "<style>${css}nav{border-bottom:2px solid hsl($hue,45%,45%);padding-bottom:.6em}nav b{font-size:1.3em;margin-right:1.2em}nav a{margin-right:1em}ul{list-style:none;padding:0}li{padding:.7em 0;border-bottom:1px solid ${mute}44}li span{float:right}</style></head><body><div class=\"wrap\">"
+      echo "<nav><b>$name</b><a href=\"#posts\">Posts</a><a href=\"#about\">About</a></nav>"
+      echo "<section id=\"posts\"><ul>"
+      for ((i=0; i<n; i++)); do echo "<li><strong>${pt[i]}</strong><span class=\"meta\">${pd[i]}</span><br>${ps[i]}</li>"; done
+      echo "</ul></section><section id=\"about\"><h3>About</h3><p>$tagline Written slowly and updated when there is something worth saying.</p></section>"
+      echo "<footer><p>$name, $year.</p></footer></div></body></html>" ;;
+    2)  # 卡片网格
+      echo "<style>${css}.wrap{max-width:$((w + 240))px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px;margin-top:2em}.card{border:1px solid ${mute}55;border-radius:$((RANDOM % 4 * 4))px;padding:16px 18px}.card h2{font-size:1.05em;margin:.2em 0 .5em;color:hsl($hue,45%,45%)}</style></head><body><div class=\"wrap\">"
+      echo "<h1>$name</h1><p>$tagline</p><div class=\"grid\">"
+      for ((i=0; i<n; i++)); do echo "<section class=\"card\"><div class=\"meta\">${pd[i]}</div><h2>${pt[i]}</h2><p>${ps[i]}</p></section>"; done
+      echo "</div><footer><p>All text and pictures by the author. $year</p></footer></div></body></html>" ;;
+    3)  # 侧栏 + 日志
+      echo "<style>${css}.wrap{max-width:$((w + 200))px;display:flex;gap:40px;flex-wrap:wrap}aside{flex:1 1 180px}main{flex:3 1 380px}aside h1{font-size:1.5em;color:hsl($hue,45%,45%)}dt{font-weight:bold;margin-top:1.4em}dd{margin:.3em 0 0}</style></head><body><div class=\"wrap\">"
+      echo "<aside><h1>$name</h1><p>$tagline</p><p class=\"meta\">A personal $topic journal.</p></aside><main><dl>"
+      for ((i=0; i<n; i++)); do echo "<dt>${pt[i]} <span class=\"meta\">&middot; ${pd[i]}</span></dt><dd>${ps[i]}</dd>"; done
+      echo "</dl><footer><p>&copy; $name</p></footer></main></div></body></html>" ;;
+  esac
 }
 
 # write_nginx 0：只有 80；write_nginx 1：80 + 本地 HTTPS（Reality target + CDN 反代）
 write_nginx(){
   local with_tls=$1 names="$DOMAIN${CDN:+ $CDN}" v6=""
   has_v6 && v6="listen [::]:80;"
+  rm -f "$NGX_STREAM"          # 需要时在最后重新生成
   cat > "$NGX_SITE" <<EOF
 # 由 node-setup.sh 生成，重跑会覆盖
 server {
@@ -888,8 +999,21 @@ EOF
   # 浏览器看到 Alt-Svc 会去连 UDP 443，那里是 Hysteria2 的伪装站，前后一致
   if (( ! NO_HY2 && ! OBFS )) && [[ $HPORT == 443 ]]; then altsvc="add_header Alt-Svc 'h3=\":443\"; ma=86400' always;"; fi
 
+  # 启用源站隐藏时：18443 是 stream 分流层，HTTPS 站点在 18444，并从 PROXY protocol 取真实来源 IP
+  local lp=$TARGET_PORT pp="" realip="" guard=""
+  if (( HIDE )); then
+    lp=$HTTPS_PORT pp=" proxy_protocol"
+    realip=$'    set_real_ip_from 127.0.0.1;\n    real_ip_header proxy_protocol;'
+    # SNI 写主域名、Host 写 CDN 域名的请求会绕过 stream 那层，这里再挡一次（和未知 Host 一样回 404）
+    guard='if ($pn_cf = 0) { return 404; }'
+    { echo; echo "# 来源是不是 Cloudflare（1 = 是）"
+      echo 'geo $proxy_protocol_addr $pn_cf {'; echo "    default 0;"
+      printf '    %s 1;\n' $CF_V4; echo "}"; } >> "$NGX_SITE"
+  fi
+
   local common
   common=$(cat <<EOF
+$realip
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ecdh_curve X25519:prime256v1:secp384r1;
     ssl_session_timeout 1d;
@@ -904,7 +1028,16 @@ EOF
     cat >> "$NGX_SITE" <<EOF
 
 server {
-    listen 127.0.0.1:$TARGET_PORT ssl$h2l default_server;
+    listen 127.0.0.1:$lp ssl$h2l$pp default_server;
+    ssl_reject_handshake on;
+    return 404;
+}
+EOF
+    (( HIDE )) && cat >> "$NGX_SITE" <<EOF
+
+# 不是 Cloudflare 来的 CDN 域名连接：和未知 SNI 一样拒绝握手
+server {
+    listen 127.0.0.1:$REJECT_PORT ssl$pp default_server;
     ssl_reject_handshake on;
 }
 EOF
@@ -913,7 +1046,7 @@ EOF
 
 # Reality 的 target：未授权连接看到的就是这个站
 server {
-    listen 127.0.0.1:$TARGET_PORT ssl$h2l;
+    listen 127.0.0.1:$lp ssl$h2l$pp;
     $h2d
     server_name $DOMAIN;
     ssl_certificate     $MAIN_DIR/fullchain.crt;
@@ -964,12 +1097,13 @@ EOF
 
 # CDN 回源：XHTTP（推荐）+ WS（兼容老客户端），按 --proto 生成
 server {
-    listen 127.0.0.1:$TARGET_PORT ssl$h2l;
+    listen 127.0.0.1:$lp ssl$h2l$pp;
     $h2d
     server_name $CDN;
     ssl_certificate     $CDN_CERT_DIR/fullchain.crt;
     ssl_certificate_key $CDN_CERT_DIR/private.key;
 $common
+    $guard
 
     # 以下 XHTTP 反代参数取自 Xray-core discussions #4118（XHTTP 五合一配置）
     http2_max_concurrent_streams 1024;
@@ -985,6 +1119,31 @@ $loc_x
 $loc_w
 
     location / { try_files \$uri \$uri/ =404; }
+}
+EOF
+  (( HIDE )) || return 0
+  # stream 分流层（见 probe_stream 的说明）。SNI 不分大小写，也允许末尾带点
+  local cdn_re=${CDN//./\\.}
+  cat > "$NGX_STREAM" <<EOF
+# 由 node-setup.sh 生成，重跑会覆盖
+stream {
+    geo \$proxy_protocol_addr \$pn_cf {
+        default 0;
+$(printf '        %s 1;\n' $CF_V4)
+    }
+    map "\$pn_cf:\$ssl_preread_server_name" \$pn_backend {
+        default                  127.0.0.1:$HTTPS_PORT;
+        "~*^0:$cdn_re\\.?\$"    127.0.0.1:$REJECT_PORT;
+    }
+    server {
+        listen 127.0.0.1:$TARGET_PORT proxy_protocol;
+        set_real_ip_from 127.0.0.1;      # 这样转给后面的 PROXY protocol 头里才是真实来源 IP
+        ssl_preread on;
+        proxy_protocol on;
+        proxy_connect_timeout 5s;
+        proxy_timeout 1d;
+        proxy_pass \$pn_backend;
+    }
 }
 EOF
 }
@@ -1175,7 +1334,7 @@ EOF
         "network": "raw",
         "security": "reality",
         "realitySettings": {
-          "target": "$R_DEST",
+          "target": "$R_DEST",$( (( HIDE )) && printf '\n          "xver": 1,')
           "serverNames": [ "$R_SNI" ],
           "privateKey": "$PRIV",
           "shortIds": [ "$SID" ],
@@ -1340,6 +1499,14 @@ start_all(){
   ylw "  自检：未授权连接应拿到 $R_SNI 的$( (( NODOMAIN )) && echo "真实" || echo " Let's Encrypt ")证书"
   timeout 8 openssl s_client -connect "127.0.0.1:$RPORT" -servername "$R_SNI" </dev/null 2>/dev/null \
     | grep -E '^(subject|issuer)=' | sed 's/^/    /' || ylw "    （本地没拿到证书，请从外部再测）"
+  if (( HIDE )); then
+    # 本机不是 Cloudflare 的 IP：拿 CDN 域名当 SNI 应该被拒绝握手，拿不到证书
+    if timeout 8 openssl s_client -connect "127.0.0.1:$RPORT" -servername "$CDN" </dev/null 2>/dev/null | grep -q '^subject='; then
+      red "  ✗ CDN 源站隐藏没生效：非 Cloudflare 来源仍能拿到 $CDN 的证书"
+    else
+      grn "  ✓ CDN 源站隐藏生效：非 Cloudflare 来源拿 $CDN 当 SNI 会被拒绝握手"
+    fi
+  fi
 }
 
 # ------------------------------------------------------------------ 输出 ----
@@ -1463,7 +1630,7 @@ detect_table_comp(){ # $1=表项 $2=是否计入全部
 detect_all(){
   C_TYPE=() C_NAME=() C_DATA=() C_DESC=() C_INALL=()
   local e line
-  if [[ -e /usr/local/sbin/proxy-node-fw || -e $NGX_SITE || -d $WORKDIR ]]; then
+  if [[ -e /usr/local/sbin/proxy-node-fw || -e $NGX_SITE || -e $NGX_STREAM || -d $WORKDIR ]]; then
     add_comp self "本脚本的附加配置" "" "nginx 站点、防火墙/端口跳跃、证书、凭据（$WORKDIR）" 1
   fi
   for e in "${PROXY_COMPONENTS[@]}"; do detect_table_comp "$e" 1; done
@@ -1539,7 +1706,7 @@ remove_self(){
     $ipt -t nat -F HY2_HOP 2>/dev/null || true
     $ipt -t nat -X HY2_HOP 2>/dev/null || true
   done
-  rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE"
+  rm -f /etc/nginx/sites-enabled/proxy-node "$NGX_SITE" "$NGX_STREAM"
   if systemctl is-active --quiet nginx 2>/dev/null; then nginx -t -q 2>/dev/null && systemctl reload nginx || true; fi
   local SAVED_DOMAIN="" SAVED_CERTS="" c
   # shellcheck disable=SC1090

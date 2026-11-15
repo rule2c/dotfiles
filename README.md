@@ -29,6 +29,16 @@ Personal utility scripts
 
 不用 Cloudflare 管理 DNS 时可以加 `--http01` 改用 80 端口验证，但证书会公开具体域名。
 
+### 抗探测
+
+- **CDN 源站隐藏**（有 CDN 域名时自动启用）：只有 Cloudflare 的 IP 能以 CDN 域名回源。其他人拿 CDN 域名当 SNI 直连 VPS 的 IP，握手会被拒绝，表现和连一个不存在的域名一样，所以无法确认这个 CDN 域名的源站是这台机器。
+  - 做法：Xray 用 `xver` 把真实来源 IP 交给 nginx，nginx 前面加一层 stream 按 SNI 和来源 IP 分流。只影响 CDN 线路，Reality 和 Hysteria2 不经过这一层。
+  - 需要 nginx 的 stream 模块（脚本会装 `libnginx-mod-stream`）和 nginx 1.19.4 以上。条件不满足时自动退回不隐藏的方式，并在部署时提示。
+  - Cloudflare 的 IP 段在部署时更新。如果 CDN 线路突然连不上而其他线路正常，重跑一次脚本刷新 IP 段。
+- **伪装站随机生成**：每台机器的伪装页面在站名、主题、文章、版式、字体和配色上随机组合，不同部署之间不会出现一模一样的页面。
+  - 已有页面会沿用。想换成自己的站点，把文件放进 `/var/www/proxy-node/` 即可，重跑不会覆盖。
+  - 旧版本部署的固定页面（Field Notes）会在重跑时自动换掉。`--reset` 也会重新生成。
+
 ### 没有自己的域名
 
 ```bash
