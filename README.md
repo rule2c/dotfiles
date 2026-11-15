@@ -81,9 +81,13 @@ sudo bash vps/node-setup.sh -d a.example.com -c cdn.example.com -e me@example.co
 sudo bash vps/node-setup.sh info
 ```
 
+```bash
+sudo node-setup redeploy
+```
+
 第一条是交互式，按提示输入即可，Token 的输入不会显示在屏幕上。第二条用参数一次传完，Token 可以用环境变量 `CF_Token` 传入，全部参数见 `--help`。第三条用来重新显示节点信息。
 
-重复运行会沿用上次生成的 UUID、密钥和密码，客户端不用改。加 `--reset` 才会重新生成。
+第四条是重新部署：域名、端口、协议、节点名都沿用上次的，UUID、密钥和密码也不变，什么都不用输入，客户端不用改。更新脚本后（`sudo node-setup update`）用它让改动生效。要改某一项就带上对应参数，例如 `sudo node-setup redeploy -p 8443`；加 `--reset` 会重新生成凭据。Cloudflare Token 从 acme.sh 保存的配置里读取，不会另存一份。
 
 Xray 默认安装**最新版**。v26.9.9 起它拒绝不带 X25519MLKEM768 的 Client Hello，所以客户端的 uTLS 指纹要选带它的：Shadowrocket 选 Chrome、Chrome140、Safari 或 Firefox（Chrome120 等旧指纹连不上），mihomo 用新版内核。客户端太旧时，用环境变量 `XRAY_VERSION=v26.7.28` 重跑，固定到没有这个限制的版本。
 

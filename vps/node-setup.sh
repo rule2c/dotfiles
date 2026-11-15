@@ -14,6 +14,7 @@
 #    sudo bash node-setup.sh -d a.example.com -p 443 -u 443 --hop 20000-40000 -e me@example.com
 #    sudo bash node-setup.sh --no-domain                       # 没有自己的域名：Reality 借用同网段邻居的网站，Hysteria2 自签证书
 #    sudo bash node-setup.sh --target www.example.com          # 同上，但手动指定借用的网站（不扫描）
+#    node-setup redeploy                                       # 重新部署：沿用上次的全部设置和凭据，什么都不用输
 #    sudo bash node-setup.sh info                              # 重新显示节点信息
 #    node-setup / node-setup update                            # 部署后已装成命令；update 从 GitHub 更新脚本
 #                   仓库是私有的话，把只读 Token（Contents: Read）写进 /root/.gh-token，或用环境变量 GH_TOKEN
@@ -69,6 +70,7 @@ trap 'rc=$?; printf "\033[31m脚本出错退出：第 %s 行，命令：%s（退
 WORKDIR=/root/proxy-node
 STATE=$WORKDIR/state.env
 INFO=$WORKDIR/node-info.txt
+DEPLOY=$WORKDIR/deploy.env   # 上次部署用的设置（域名、端口、协议等），redeploy 时读回来
 WEB=/var/www/proxy-node
 SSL=/etc/ssl/proxy-node
 MAIN_DIR=$SSL/main          # 主域名证书；CDN 域名若被同一张通配符覆盖，也用它
@@ -102,7 +104,7 @@ CF_TOKEN=${CF_Token:-} HTTP01=0 NODOMAIN=0 RSNI=""
 parse_args(){
   while [[ $# -gt 0 ]]; do
     case $1 in
-      install|info|uninstall|update) CMD=$1 ;;
+      install|info|uninstall|update|redeploy) CMD=$1 ;;
       -d|--domain)   DOMAIN=${2:?缺少域名}; shift ;;
       -c|--cdn)      CDN=${2:?缺少 CDN 域名}; shift ;;
       -p|--port)     RPORT=${2:?缺少端口}; shift ;;
@@ -362,7 +364,89 @@ do_update(){
   fi
   install -m 755 "$tmp" "$SELF_BIN"; rm -f "$tmp"
   grn "已更新 $SELF_BIN（Xray 默认版本：$(sed -n 's/^XRAY_DEFAULT_VERSION=\([^ ]*\).*/\1/p' "$SELF_BIN")）"
-  ylw "节点配置没有变；要让新版脚本的改动生效，运行 node-setup 重新部署（凭据默认沿用）"
+  ylw "节点配置没有变；要让新版脚本的改动生效，运行 node-setup redeploy 重新部署（设置和凭据都沿用，不用输入）"
+}
+
+# ------------------------------------------------------ 沿用上次的设置 ----
+# 部署成功后把设置写进 $DEPLOY；node-setup redeploy（或菜单第 1 项）读回来，不再提问。
+# Cloudflare Token 不另存：acme.sh 为了续期已经存在 /root/.acme.sh/account.conf，从那里读。
+save_deploy(){
+  local proto=${PROTOS// /,}
+  ( umask 077
+    printf 'D_%s=%q\n' DOMAIN "$DOMAIN" CDN "$CDN" NODOMAIN "$NODOMAIN" RSNI "$RSNI_USER" PROTO "$proto" \
+      RPORT "$RPORT" HPORT "$HPORT" HOP "${HOP:-off}" OBFS "$OBFS" HTTP01 "$HTTP01" \
+      EMAIL "$EMAIL" NODE "$NODE" REGION "$REGION" > "$DEPLOY" )
+}
+
+# 旧版脚本部署的机器没有 $DEPLOY：从上次的节点信息里还原（还原不出来就返回 1，走向导）
+guess_deploy(){
+  local r h name
+  D_DOMAIN=$(bash -c 'source "$1" 2>/dev/null; echo "${SAVED_DOMAIN:-}"' _ "$STATE")
+  D_CDN=$(bash -c 'source "$1" 2>/dev/null; echo "${SAVED_CDN:-}"' _ "$STATE")
+  [[ -n $D_DOMAIN ]] || D_NODOMAIN=1
+  r=$(grep -m1 -- '-reality", type: vless' "$INFO") || return 1
+  D_RPORT=$(sed -n 's/.*, port: \([0-9]*\),.*/\1/p' <<<"$r")
+  name=$(sed -n 's/.*{name: "\(.*\)-reality", type.*/\1/p' <<<"$r")
+  [[ -n $D_RPORT && -n $name ]] || return 1
+  # 名字前面的国旗（两个区域指示符，各 4 字节 F0 9F 87 xx）还原成国家代码；没有国旗就是 none
+  local hex; hex=$(printf '%s' "${name%% *}" | od -An -tx1 | tr -d ' \n')
+  if [[ $name == *" "* && $hex =~ ^f09f87([0-9a-f]{2})f09f87([0-9a-f]{2})$ ]]; then
+    printf -v D_REGION "\\x%02x\\x%02x" $(( 0x${BASH_REMATCH[1]} - 0xA6 + 97 )) $(( 0x${BASH_REMATCH[2]} - 0xA6 + 97 ))
+    printf -v D_REGION "$D_REGION"
+    name=${name#* }
+  else D_REGION=none
+  fi
+  D_NODE=$name
+  D_PROTO=reality
+  grep -q -- '-reality-xhttp", type' "$INFO" && D_PROTO+=,reality-xhttp
+  if h=$(grep -m1 -- '-hysteria2", type' "$INFO"); then
+    D_PROTO+=,hy2
+    D_HPORT=$(sed -n 's/.*, port: \([0-9]*\),.*/\1/p' <<<"$h")
+    D_HOP=$(sed -n 's/.*, ports: \([0-9]*-[0-9]*\),.*/\1/p' <<<"$h"); D_HOP=${D_HOP:-off}
+    [[ $h == *"obfs: salamander"* ]] && D_OBFS=1 || D_OBFS=0
+  fi
+  grep -q -- '-cdn-xhttp", type' "$INFO" && D_PROTO+=,cdn-xhttp
+  grep -q -- '-cdn-ws", type' "$INFO" && D_PROTO+=,cdn-ws
+  # 证书上次是用 80 端口验证的（--http01）
+  if (( ! D_NODOMAIN )) && grep -qs "^Le_Webroot='/" /root/.acme.sh/*/*.conf; then D_HTTP01=1; fi
+  return 0
+}
+
+has_saved(){ [[ -s $DEPLOY || ( -s $STATE && -s $INFO ) ]]; }
+
+# 命令行里给了的参数优先，没给的用上次的
+load_deploy(){
+  local D_DOMAIN="" D_CDN="" D_NODOMAIN=0 D_RSNI="" D_PROTO="" D_RPORT="" D_HPORT="" D_HOP="" D_OBFS="" \
+        D_HTTP01=0 D_EMAIL="" D_NODE="" D_REGION=""
+  if [[ -s $DEPLOY ]]; then
+    # shellcheck disable=SC1090
+    source "$DEPLOY"
+  elif [[ -s $STATE && -s $INFO ]]; then guess_deploy || return 1
+  else return 1
+  fi
+  if [[ -z $DOMAIN && $NODOMAIN -eq 0 ]]; then
+    DOMAIN=$D_DOMAIN NODOMAIN=$D_NODOMAIN
+    [[ -n $CDN ]] || CDN=$D_CDN
+    [[ -n $RSNI ]] || RSNI=$D_RSNI
+    if [[ -z $PROTO ]]; then
+      PROTO=$D_PROTO
+      if (( NO_HY2 )); then PROTO=${PROTO//,hy2/}; NO_HY2=0; fi
+    fi
+  fi
+  [[ -n $RPORT ]] || RPORT=$D_RPORT
+  [[ -n $HPORT ]] || HPORT=$D_HPORT
+  [[ -n $HOP ]] || HOP=$D_HOP
+  [[ -n $OBFS ]] || OBFS=$D_OBFS
+  [[ -n $EMAIL ]] || EMAIL=$D_EMAIL
+  [[ -n $NODE ]] || NODE=$D_NODE
+  [[ -n $REGION ]] || REGION=$D_REGION
+  (( D_HTTP01 )) && HTTP01=1
+  [[ -n $DOMAIN ]] || (( NODOMAIN )) || return 1
+  if [[ -z $CF_TOKEN && $HTTP01 -eq 0 && $NODOMAIN -eq 0 ]]; then
+    CF_TOKEN=$(sed -n "s/^SAVED_CF_Token='\(.*\)'\$/\1/p" /root/.acme.sh/account.conf 2>/dev/null | sed -n 1p || true)
+  fi
+  grn "沿用上次的设置：$( (( NODOMAIN )) && echo "无域名" || echo "$DOMAIN${CDN:+ + $CDN}")，协议 ${PROTO//,/ }，凭据$( (( RESET )) && echo 重新生成 || echo 不变)"
+  return 0
 }
 
 # 不带任何参数运行时的主菜单
@@ -370,7 +454,14 @@ main_menu(){
   echo
   grn "== node-setup.sh =="
   local c
-  choose c "要做什么？" 1 "部署 / 重新部署" "查看节点信息" "更新脚本" "卸载" "退出"
+  if has_saved; then
+    choose c "要做什么？" 1 "重新部署（沿用上次的设置和凭据，不用再输入）" "改设置后部署（重新走向导）" \
+      "查看节点信息" "更新脚本" "卸载" "退出"
+    (( c == 1 )) && { CMD=redeploy; return 0; }
+    c=$(( c - 1 ))
+  else
+    choose c "要做什么？" 1 "部署" "查看节点信息" "更新脚本" "卸载" "退出"
+  fi
   case $c in
     1) CMD=install ;;
     2) CMD=info ;;
@@ -1901,9 +1992,13 @@ main(){
   preflight
   if [[ $CMD == uninstall ]]; then do_uninstall; exit 0; fi
   if [[ $CMD == update ]]; then do_update; exit 0; fi
+  if [[ $CMD == redeploy ]]; then
+    load_deploy || die "找不到上次部署的设置（这台机器还没部署过？），请运行 node-setup 走一遍向导"
+  fi
   [[ -n $DOMAIN ]] || (( NODOMAIN )) || interactive
   ask_token
   validate
+  RSNI_USER=$RSNI          # 用户手动指定的借用网站（自动扫描时为空）
   mkdir -p "$WORKDIR"; chmod 700 "$WORKDIR"
   install_deps
   check_dns
@@ -1919,6 +2014,7 @@ main(){
   setup_firewall
   start_all
   write_info
+  save_deploy
   install_self
 }
 
