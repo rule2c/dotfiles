@@ -237,6 +237,52 @@ function Opt9 {
 }
 
 # ------------------------------------------------------------
+function Opt10 {
+    $base = (Read-Host '  目标目录（直接回车 = D:\Users）').Trim().Trim('"')
+    if (-not $base) { $base = 'D:\Users' }
+    $base = $base.TrimEnd('\')
+    $drive = Split-Path $base -Qualifier -ErrorAction SilentlyContinue
+    if (-not $drive -or -not (Test-Path "$drive\")) { $script:fail += "移动用户文件夹: 盘符不存在 ($base)"; return }
+    Write-Host "  桌面/下载/文档/图片/音乐/视频 将移到 $base 下" -ForegroundColor Yellow
+    Write-Host '  如果开启了 OneDrive 的"备份桌面/文档/图片"，请先在 OneDrive 设置里关掉。' -ForegroundColor Yellow
+    $mv = (Read-Host '  同时移动现有文件？(Y = 移动文件, n = 只改位置)').Trim().ToLower() -ne 'n'
+    $usf = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+    $sf  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+    $items = @(
+        @('Desktop',   'Desktop',                                 '{754AC886-DF64-4CBA-86B5-F7FBF4FBCEF5}'),
+        @('Downloads', '{374DE290-123F-4565-9164-39C4925E467B}',  '{7D83EE9B-2244-4E70-B1F5-5393042AF1E4}'),
+        @('Documents', 'Personal',                                '{F42EE2D3-909F-4907-8871-4C22FC0BF756}'),
+        @('Pictures',  'My Pictures',                             '{0DDD015D-B06C-45D5-8C4C-F59713854639}'),
+        @('Music',     'My Music',                                '{A0C69A99-21C8-4671-8703-7934162FCF1D}'),
+        @('Videos',    'My Video',                                '{35286A68-3C57-41A1-BBB1-0EAE73D76C95}'))
+    foreach ($it in $items) {
+        $sub, $val, $val2 = $it
+        $new = "$base\$sub"
+        $old = $null
+        try { $old = [Environment]::ExpandEnvironmentVariables((Get-ItemPropertyValue $usf $val -ErrorAction Stop)).TrimEnd('\') } catch {}
+        Write-Host "  [$sub] $old -> $new"
+        New-Item -ItemType Directory -Force $new -ErrorAction SilentlyContinue | Out-Null
+        if (-not (Test-Path $new)) { $script:fail += "移动用户文件夹: 无法创建 $new"; continue }
+        if ($old -and ($old -ne $new) -and (Test-Path $old)) {
+            if ($mv) {
+                robocopy $old $new /E /MOVE /XJ /COPY:DAT /DCOPY:T /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+                if ($LASTEXITCODE -ge 8) { Write-Host "    [警告] 部分文件无法移动（可能被占用），请检查 $old" -ForegroundColor Yellow }
+            } elseif (Test-Path "$old\desktop.ini") {
+                # 只复制 desktop.ini，保留本地化名称和图标
+                robocopy $old $new desktop.ini /COPY:DAT /R:0 /NFL /NDL /NJH /NJS /NP | Out-Null
+            }
+        }
+        S $usf $val $new 'ExpandString'
+        if ($val2) { S $usf $val2 $new 'ExpandString' }
+        S $sf $val $new 'String'
+        attrib +r $new 2>$null   # 只读属性让系统识别 desktop.ini（本地化名称和图标）
+    }
+    Write-Host '  重启资源管理器...'
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue   # 系统会自动重新拉起
+    Write-Host '  如有程序仍使用旧路径，请注销或重启。'
+}
+
+# ------------------------------------------------------------
 # 菜单：序号 -> (名称, 说明, 函数)
 $menu = [ordered]@{
     1 = @('性能：后台应用、视觉效果、电源', '关闭后台应用(Claude 除外)、精简动画与透明效果、最佳性能电源模式、关闭快速启动', ${function:Opt1})
@@ -248,6 +294,7 @@ $menu = [ordered]@{
     7 = @('隐私：输入、语音、Copilot、传递优化', '关闭输入/墨迹收集、在线语音、Copilot、Recall(AI 数据分析)、传递优化', ${function:Opt7})
     8 = @('禁用数据收集计划任务',           '禁用兼容性评估、CEIP、磁盘诊断、反馈、地图、Office 遥测、Xbox 存档同步等任务', ${function:Opt8})
     9 = @('清理临时文件',                   '清空用户与系统 Temp 目录（占用中的文件自动跳过）', ${function:Opt9})
+    10 = @('移动用户文件夹到其他盘',        '把桌面/下载/文档/图片/音乐/视频移到 D:\Users（可自定义目录，可选是否移动现有文件）', ${function:Opt10})
 }
 
 function Show-Menu {
@@ -258,7 +305,7 @@ function Show-Menu {
         Write-Host ("      {0}" -f $menu[$k][1]) -ForegroundColor DarkGray
     }
     Write-Host ''
-    Write-Host '  [a] 全部执行    [q] 退出' -ForegroundColor Yellow
+    Write-Host '  [a] 全部执行 (1-9，不含 10)    [q] 退出' -ForegroundColor Yellow
     Write-Host '  可多选，用空格或逗号分隔，例如: 1 4 6' -ForegroundColor Yellow
 }
 
@@ -268,7 +315,7 @@ while ($true) {
     if ($in -in 'q', '0', 'quit', 'exit') { break }
     if ($in -eq '') { continue }
 
-    if ($in -eq 'a') { $sel = @($menu.Keys) }
+    if ($in -eq 'a') { $sel = @($menu.Keys | Where-Object { $_ -ne 10 }) }   # 10 会改动文件位置，不包含在“全部”里
     else {
         $sel = @()
         foreach ($tok in ($in -split '[\s,，]+' | Where-Object { $_ })) {
