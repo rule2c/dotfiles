@@ -5,7 +5,7 @@
 
 sing-box 里这样引用：
   {"tag": "Foo", "type": "remote", "format": "source",
-   "url": "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/sing-box/Foo.json"}
+   "url": "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/sing-box/Foo.json"}
 
 规则集版本用 2（sing-box 1.10+ 都能读）。
 sing-box 没有对应项的规则（如 IP-ASN）跳过并打印 GitHub Actions 警告。

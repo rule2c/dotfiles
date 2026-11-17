@@ -1,5 +1,18 @@
-# personal-scripts
-Personal utility scripts
+# dotfiles
+
+个人代理规则、客户端配置和常用脚本。由原 `Customized_Rules`（规则）和 `personal-scripts`（脚本）合并而来。
+
+| 目录 | 内容 |
+|---|---|
+| `rule/` | 自定义分流规则（Clash classical 列表），`rule/sing-box/` 是自动生成的 sing-box 规则集 |
+| `scripts/` | 规则转换脚本，由 `.github/workflows/update-geosite-lists.yml` 每天和规则改动时调用 |
+| `client/` | mihomo / Shadowrocket / sing-box 客户端配置，Sub-Store 部署脚本 |
+| `vps/` | 代理节点一键部署脚本 |
+| `windows/` | Windows 优化脚本 |
+
+规则引用地址：`https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/<名称>.list`（sing-box：`rule/sing-box/<名称>.json`）。
+
+`client/mihomo.yaml` 里的订阅链接是占位符（`sub.example.com` / `BACKEND_PATH`），使用前换成自己的 Sub-Store 地址，或用 `client/deploy-substore.sh` 部署后自动生成。
 
 ## vps/node-setup.sh：代理节点一键部署
 
@@ -145,7 +158,7 @@ nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会�
 - **不支持 XHTTP：** sing-box 没有 XHTTP 传输，Sub-Store 输出时会丢掉 `xhttp` 节点。东京只剩 vision；洛杉矶剩 reality → hysteria2 → cdn-ws。
 - **回落组：** sing-box 没有 `fallback`，用 `urltest` 加很大的 `tolerance`（10000 ms）代替，效果是按顺序用第一个可用节点。区别是前面的节点恢复后不会自动切回去，要等当前节点失效。
 - **空组：** 节点名都没匹配上时，模板脚本会往组里放一个名为 `COMPATIBLE` 的直连出站。第 3 步的脚本把它换成连不上的出站（`127.0.0.1:9`），效果和 mihomo 的 `empty-fallback: REJECT` 一样，不会用本机 IP 直连出去。sing-box 1.13 起没有 `block` 出站，所以这样写。看到 `COMPATIBLE` 说明节点名或模板脚本参数不对。
-- **自定义规则：** sing-box 读不了 Clash 的 classical 列表。`Customized_Rules` 仓库的 Action 会把 `rule/*.list` 转成 `rule/sing-box/*.json`（sing-box 规则集源文件），配置里以 `format: source` 远程引用。列表改动推送后自动重新生成，不用改这里。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，转换时会跳过。
+- **自定义规则：** sing-box 读不了 Clash 的 classical 列表。本仓库的 Action（`.github/workflows/update-geosite-lists.yml`） 会把 `rule/*.list` 转成 `rule/sing-box/*.json`（sing-box 规则集源文件），配置里以 `format: source` 远程引用。列表改动推送后自动重新生成，不用改这里。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，转换时会跳过。
 - **geosite / geoip：** 用 MetaCubeX meta-rules-dat 的 `sing` 分支 `.srs` 规则集，与 mihomo 用的是同一份数据，经 `🚀 手动选择` 下载。
 
 ## 广告拦截（mihomo / Shadowrocket / sing-box）

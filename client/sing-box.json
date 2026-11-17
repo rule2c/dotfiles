@@ -839,7 +839,7 @@
         "tag": "Apple-AI",
         "type": "remote",
         "format": "source",
-        "url": "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/sing-box/Apple-AI.json",
+        "url": "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/sing-box/Apple-AI.json",
         "download_detour": "🚀 手动选择",
         "update_interval": "1d"
       },
@@ -847,7 +847,7 @@
         "tag": "Custom_Direct",
         "type": "remote",
         "format": "source",
-        "url": "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/sing-box/Custom_Direct_Classical.json",
+        "url": "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/sing-box/Custom_Direct_Classical.json",
         "download_detour": "🚀 手动选择",
         "update_interval": "1d"
       },
@@ -855,7 +855,7 @@
         "tag": "Custom_Proxy",
         "type": "remote",
         "format": "source",
-        "url": "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/sing-box/Custom_Proxy_Classical.json",
+        "url": "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/sing-box/Custom_Proxy_Classical.json",
         "download_detour": "🚀 手动选择",
         "update_interval": "1d"
       },
@@ -863,7 +863,7 @@
         "tag": "Steam_CDN",
         "type": "remote",
         "format": "source",
-        "url": "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/sing-box/Steam_CDN.json",
+        "url": "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/sing-box/Steam_CDN.json",
         "download_detour": "🚀 手动选择",
         "update_interval": "1d"
       },
@@ -871,7 +871,7 @@
         "tag": "Custom_Port",
         "type": "remote",
         "format": "source",
-        "url": "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/sing-box/Custom_Port_Direct.json",
+        "url": "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/sing-box/Custom_Port_Direct.json",
         "download_detour": "🚀 手动选择",
         "update_interval": "1d"
       }

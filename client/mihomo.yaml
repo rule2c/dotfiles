@@ -169,12 +169,12 @@ rule-anchor:
   classical: &classical {type: http, behavior: classical, format: text, interval: 86400, proxy: 🚀 手动选择}
 
 rule-providers:
-  Apple-AI:      {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Apple-AI.list",                path: ./rules/Apple-AI.list}
-  Custom_Direct: {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Custom_Direct_Classical.list", path: ./rules/Custom_Direct.list}
-  Custom_Proxy:  {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Custom_Proxy_Classical.list",  path: ./rules/Custom_Proxy.list}
-  Steam_CDN:     {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Steam_CDN.list",               path: ./rules/Steam_CDN.list}
-  Custom_Port:   {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Custom_Port_Direct.list",      path: ./rules/Custom_Port.list}
-  HGhub:         {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/HGhub.list",                  path: ./rules/HGhub.list}
+  Apple-AI:      {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Apple-AI.list",                path: ./rules/Apple-AI.list}
+  Custom_Direct: {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Custom_Direct_Classical.list", path: ./rules/Custom_Direct.list}
+  Custom_Proxy:  {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Custom_Proxy_Classical.list",  path: ./rules/Custom_Proxy.list}
+  Steam_CDN:     {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Steam_CDN.list",               path: ./rules/Steam_CDN.list}
+  Custom_Port:   {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Custom_Port_Direct.list",      path: ./rules/Custom_Port.list}
+  HGhub:         {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/HGhub.list",                  path: ./rules/HGhub.list}
 
 # ---------------- 分流规则（从上往下匹配） ----------------
 rules:
