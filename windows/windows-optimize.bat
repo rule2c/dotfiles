@@ -45,7 +45,7 @@ public static class ConFont {
     }
 }
 "@
-    [void][ConFont]::Set('NSimSun', 20)
+    foreach ($face in '新宋体', 'NSimSun', 'MS Gothic') { if ([ConFont]::Set($face, 16)) { break } }   # 字号 16，想更小改这个数字
 } catch {}
 
 function Backup {
