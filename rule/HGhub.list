@@ -1,0 +1,14 @@
+# HGhub 客户端分流规则（源码已知目标，不是完整流量白名单）
+# 来源：rule2c/HGhub rules/hghub.list，2026-11-07 源码盘点；本仓库保留副本，避免上游删库后规则失效
+# Fixed API origins
+DOMAIN-SUFFIX,huangguoai.com
+DOMAIN-SUFFIX,huangguoai.ai
+# Mirror publishing page (do not match all pages.dev)
+DOMAIN,huangguoai.pages.dev
+# Media CDN and mirror suffixes from repository test samples
+DOMAIN-SUFFIX,drleao.cn
+DOMAIN-SUFFIX,hzjvlo.cn
+DOMAIN-SUFFIX,xxbgwypx.cc
+# Update API and release page (shared GitHub infrastructure)
+DOMAIN,api.github.com
+DOMAIN,github.com
