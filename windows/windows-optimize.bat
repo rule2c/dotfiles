@@ -285,16 +285,16 @@ function Opt10 {
 # ------------------------------------------------------------
 # 菜单：序号 -> (名称, 说明, 函数)
 $menu = [ordered]@{
-    1 = @('性能：后台应用、视觉效果、电源', '关闭后台应用(Claude 除外)、精简动画与透明效果、最佳性能电源模式、关闭快速启动', ${function:Opt1})
-    2 = @('服务与开机启动项',               '禁用遥测/地图/打印/WAP/错误报告服务，关闭 Realtek 音频托盘自启（禁用打印后要打印需改回自动）', ${function:Opt2})
-    3 = @('卸载小组件 (Widgets)',           '结束并卸载 Windows 小组件', ${function:Opt3})
-    4 = @('隐私：搜索',                     '关闭 Bing/云搜索/搜索要点/Cortana/搜索历史', ${function:Opt4})
-    5 = @('隐私：遥测、诊断、活动历史',     '遥测设为最低、关闭错误报告/CEIP/应用兼容性收集/活动历史/反馈提示', ${function:Opt5})
-    6 = @('隐私：广告、推荐与推广内容',     '关闭广告 ID、开始菜单推荐、锁屏/设置里的推广、预装应用推送', ${function:Opt6})
-    7 = @('隐私：输入、语音、Copilot、传递优化', '关闭输入/墨迹收集、在线语音、Copilot、Recall(AI 数据分析)、传递优化', ${function:Opt7})
-    8 = @('禁用数据收集计划任务',           '禁用兼容性评估、CEIP、磁盘诊断、反馈、地图、Office 遥测、Xbox 存档同步等任务', ${function:Opt8})
-    9 = @('清理临时文件',                   '清空用户与系统 Temp 目录（占用中的文件自动跳过）', ${function:Opt9})
-    10 = @('移动用户文件夹到其他盘',        '把桌面/下载/文档/图片/音乐/视频移到 D:\Users（可自定义目录，可选是否移动现有文件）', ${function:Opt10})
+    '1' = @('性能：后台应用、视觉效果、电源', '关闭后台应用(Claude 除外)、精简动画与透明效果、最佳性能电源模式、关闭快速启动', ${function:Opt1})
+    '2' = @('服务与开机启动项',               '禁用遥测/地图/打印/WAP/错误报告服务，关闭 Realtek 音频托盘自启（禁用打印后要打印需改回自动）', ${function:Opt2})
+    '3' = @('卸载小组件 (Widgets)',           '结束并卸载 Windows 小组件', ${function:Opt3})
+    '4' = @('隐私：搜索',                     '关闭 Bing/云搜索/搜索要点/Cortana/搜索历史', ${function:Opt4})
+    '5' = @('隐私：遥测、诊断、活动历史',     '遥测设为最低、关闭错误报告/CEIP/应用兼容性收集/活动历史/反馈提示', ${function:Opt5})
+    '6' = @('隐私：广告、推荐与推广内容',     '关闭广告 ID、开始菜单推荐、锁屏/设置里的推广、预装应用推送', ${function:Opt6})
+    '7' = @('隐私：输入、语音、Copilot、传递优化', '关闭输入/墨迹收集、在线语音、Copilot、Recall(AI 数据分析)、传递优化', ${function:Opt7})
+    '8' = @('禁用数据收集计划任务',           '禁用兼容性评估、CEIP、磁盘诊断、反馈、地图、Office 遥测、Xbox 存档同步等任务', ${function:Opt8})
+    '9' = @('清理临时文件',                   '清空用户与系统 Temp 目录（占用中的文件自动跳过）', ${function:Opt9})
+    '10' = @('移动用户文件夹到其他盘',        '把桌面/下载/文档/图片/音乐/视频移到 D:\Users（可自定义目录，可选是否移动现有文件）', ${function:Opt10})
 }
 
 function Show-Menu {
@@ -315,15 +315,17 @@ while ($true) {
     if ($in -in 'q', '0', 'quit', 'exit') { break }
     if ($in -eq '') { continue }
 
-    if ($in -eq 'a') { $sel = @($menu.Keys | Where-Object { $_ -ne 10 }) }   # 10 会改动文件位置，不包含在“全部”里
+    if ($in -eq 'a') { $sel = @($menu.Keys | Where-Object { $_ -ne '10' }) }   # 10 会改动文件位置，不包含在“全部”里
     else {
         $sel = @()
         foreach ($tok in ($in -split '[\s,，]+' | Where-Object { $_ })) {
-            $n = 0
-            if ([int]::TryParse($tok, [ref]$n) -and $menu.Contains($n)) { if ($sel -notcontains $n) { $sel += $n } }
+            # 键用字符串：OrderedDictionary 的整数下标会被当成位置序号而不是键
+            $n = [string]$tok
+            if ($menu.Contains($n)) { if ($sel -notcontains $n) { $sel += $n } }
             else { Write-Host "  忽略无效输入: $tok" -ForegroundColor Red }
         }
     }
+    $sel = @($sel | Sort-Object { [int]$_ })
     if (-not $sel.Count) { Read-Host '没有有效选项，按回车返回菜单' | Out-Null; continue }
 
     Write-Host ''
