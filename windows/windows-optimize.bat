@@ -22,6 +22,32 @@ $bk = Join-Path ([Environment]::GetFolderPath('Desktop')) '优化前注册表备
 $script:backedUp = $false
 $script:ok = 0; $script:fail = @()
 
+# 把控制台字体换成等宽中文字体（新宋体），解决中英文混排错位、行距不均。
+# 只对传统控制台窗口(conhost)当场生效；Windows Terminal 会忽略，不影响使用。
+try {
+    Add-Type -ErrorAction Stop -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class ConFont {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CFI {
+        public uint cbSize; public uint nFont; public short X; public short Y;
+        public uint Family; public uint Weight;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Face;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GetStdHandle(int h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetCurrentConsoleFontEx(IntPtr h, bool max, ref CFI f);
+    public static bool Set(string face, short size) {
+        CFI f = new CFI();
+        f.cbSize = (uint)Marshal.SizeOf(typeof(CFI));
+        f.Y = size; f.Family = 54; f.Weight = 400; f.Face = face;
+        return SetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f);
+    }
+}
+"@
+    [void][ConFont]::Set('NSimSun', 20)
+} catch {}
+
 function Backup {
     if ($script:backedUp) { return }
     New-Item -ItemType Directory -Force $bk | Out-Null
@@ -303,8 +329,8 @@ function Show-Menu {
     foreach ($k in $menu.Keys) {
         Write-Host ("  [{0}] {1}" -f $k, $menu[$k][0]) -ForegroundColor White
         Write-Host ("      {0}" -f $menu[$k][1]) -ForegroundColor DarkGray
+        Write-Host ''
     }
-    Write-Host ''
     Write-Host '  [a] 全部执行 (1-9，不含 10)    [q] 退出' -ForegroundColor Yellow
     Write-Host '  可多选，用空格或逗号分隔，例如: 1 4 6' -ForegroundColor Yellow
 }
