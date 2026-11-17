@@ -5,6 +5,7 @@ DOMAIN-SUFFIX,huangguoai.com
 DOMAIN-SUFFIX,huangguoai.ai
 # Mirror publishing page (do not match all pages.dev)
 DOMAIN,huangguoai.pages.dev
+DOMAIN,huang-guo.pages.dev
 # Media CDN and mirror suffixes from repository test samples
 DOMAIN-SUFFIX,drleao.cn
 DOMAIN-SUFFIX,hzjvlo.cn
