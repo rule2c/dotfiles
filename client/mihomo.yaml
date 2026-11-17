@@ -174,6 +174,7 @@ rule-providers:
   Custom_Proxy:  {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Custom_Proxy_Classical.list",  path: ./rules/Custom_Proxy.list}
   Steam_CDN:     {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Steam_CDN.list",               path: ./rules/Steam_CDN.list}
   Custom_Port:   {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/Customized_Rules/refs/heads/main/rule/Custom_Port_Direct.list",      path: ./rules/Custom_Port.list}
+  HGhub:         {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/HGhub/refs/heads/main/rules/hghub.list",                    path: ./rules/HGhub.list}
 
 # ---------------- 分流规则（从上往下匹配） ----------------
 rules:
@@ -243,6 +244,8 @@ rules:
   - GEOSITE,category-communication,💬 即时通讯
   - GEOSITE,category-social-media-!cn,🌐 社交媒体
   - GEOSITE,github,🚀 GitHub
+  # HGhub：放在 GitHub 之后，让 github.com 继续走 🚀 GitHub 组；要在 GEOSITE,cn 之前，否则 .cn 的 CDN 会被直连
+  - RULE-SET,HGhub,🚀 手动选择
   - GEOSITE,microsoft,Ⓜ️ 微软服务
   - GEOSITE,apple,🍎 苹果服务
   - GEOSITE,steam,🎮 Steam
