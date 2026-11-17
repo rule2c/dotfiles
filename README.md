@@ -1,86 +1,40 @@
 # dotfiles
 
-个人代理规则、客户端配置和常用脚本。由原 `Customized_Rules`（规则）和 `personal-scripts`（脚本）合并而来。
+个人代理规则、客户端配置和常用脚本。
 
 | 目录 | 内容 |
 |---|---|
-| `rule/` | 自定义分流规则（Clash classical 列表），`rule/sing-box/` 是自动生成的 sing-box 规则集 |
-| `scripts/` | 规则转换脚本，由 `.github/workflows/update-geosite-lists.yml` 每天和规则改动时调用 |
-| `client/` | mihomo / Shadowrocket / sing-box 客户端配置，Sub-Store 部署脚本 |
+| `rule/` | 自定义分流规则（Clash classical），`rule/sing-box/` 为自动生成的 sing-box 规则集 |
+| `scripts/` | 规则转换脚本，由 `.github/workflows/update-geosite-lists.yml` 定时及规则改动时调用 |
+| `client/` | mihomo / Shadowrocket / sing-box 配置，Sub-Store 部署脚本 |
 | `vps/` | 代理节点一键部署脚本 |
 | `windows/` | Windows 优化脚本 |
 
-规则引用地址：`https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/<名称>.list`（sing-box：`rule/sing-box/<名称>.json`）。
+规则地址：`https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/<名称>.list`（sing-box 用 `rule/sing-box/<名称>.json`）。
 
-`client/mihomo.yaml` 里的订阅链接是占位符（`sub.example.com` / `BACKEND_PATH`），使用前换成自己的 Sub-Store 地址，或用 `client/deploy-substore.sh` 部署后自动生成。
+`client/mihomo.yaml` 的订阅链接是占位符，换成自己的 Sub-Store 地址，或用 `client/deploy-substore.sh` 部署后自动生成。
 
-## vps/node-setup.sh：代理节点一键部署
+## vps/node-setup.sh：节点一键部署
 
-合并了原来的 `reality-setup.sh`（Reality）和 `la-setup.sh`（Hysteria2 + CDN）。一台 VPS 同时提供三条线路，被封时可以切换：
+一台 VPS 提供多条线路，出站统一只走 IPv4：
 
-| 线路 | 端口 | 作用 |
+| 线路 | 端口 | 用途 |
 |---|---|---|
-| VLESS + Vision + REALITY（偷自己） | TCP 443 | 主力。target 是本机 nginx + 自己域名的真证书 |
-| XHTTP + REALITY | 同上 | 同端口备用（fallback） |
-| Hysteria2 | UDP 443 + 端口跳跃 20000-40000 | TCP 被封或限速时使用 |
-| XHTTP / WS + TLS 经 Cloudflare | CDN 443 | VPS 的 IP 被墙后仍能用（可选） |
+| VLESS + Vision + REALITY（偷自己） | TCP 443 | 主力 |
+| XHTTP + REALITY | TCP 443 | 同端口备用 |
+| Hysteria2 | UDP 443，跳跃 20000-40000 | TCP 被封或限速时 |
+| XHTTP / WS + TLS 经 Cloudflare | CDN 443 | IP 被墙后仍可用（可选） |
 
-所有线路出站都只用 IPv4（Xray `domainStrategy: UseIPv4`，Hysteria2 `mode: 4`；客户端直接给的 IPv6 地址会被拒绝，让应用回落到 IPv4），保证一台 VPS 只有一个出口 IP。
+**准备**
 
-### 准备
+1. 主域名：Cloudflare 灰云，A 记录指向 VPS。
+2. （可选）CDN 域名：橙云，SSL 设为 Full (strict)。
+3. Cloudflare API Token：权限"区域 → 区域 → 读取"+"区域 → DNS → 编辑"。
+4. 安全组放行 TCP 443、UDP 443、UDP 20000-40000（TCP 80 可选）。
 
-1. 一个**主域名**：Cloudflare 灰色云朵，A 记录指向 VPS。Reality 和 Hysteria2 共用这个域名。
-2. （可选）一个 **CDN 域名**：Cloudflare **橙色云朵**，A 记录指向 VPS，SSL 模式设为 Full (strict)。从一开始就是橙云，不需要先改成灰云。
-3. 一个 **Cloudflare API Token**：在"我的个人资料 → API 令牌 → 创建令牌 → 自定义"里创建，权限给"区域 → 区域 → 读取"和"区域 → DNS → 编辑"，区域资源只选你的域名。
-4. 在 VPS 商家的防火墙或安全组里放行 TCP 443、UDP 443，以及 UDP 20000-40000。TCP 80 可选，只用来跳转到 https。
+证书通过 DNS 验证申请通配符证书，不暴露具体子域名；不用 Cloudflare 时加 `--http01`。有 CDN 域名时自动启用源站隐藏（仅放行 Cloudflare IP 回源）；CDN 线路单独失效时重跑脚本刷新 IP 段。伪装站每台随机生成，放自己的站点到 `/var/www/proxy-node/` 不会被覆盖。
 
-证书用 DNS 验证申请**通配符证书**（例如 `*.example.com`）：
-
-- 证书透明度日志里只会出现通配符，看不到具体子域名。
-- 连到 VPS IP 的人看到的证书也只有通配符，看不出 CDN 域名托管在这台机器上。
-- Token 由 acme.sh 保存在 `/root/.acme.sh/account.conf`，用于自动续期；卸载时会一并删除。
-
-不用 Cloudflare 管理 DNS 时可以加 `--http01` 改用 80 端口验证，但证书会公开具体域名。
-
-### 抗探测
-
-- **CDN 源站隐藏**（有 CDN 域名时自动启用）：只有 Cloudflare 的 IP 能以 CDN 域名回源。其他人拿 CDN 域名当 SNI 直连 VPS 的 IP，握手会被拒绝，表现和连一个不存在的域名一样，所以无法确认这个 CDN 域名的源站是这台机器。
-  - 做法：Xray 用 `xver` 把真实来源 IP 交给 nginx，nginx 前面加一层 stream 按 SNI 和来源 IP 分流。只影响 CDN 线路，Reality 和 Hysteria2 不经过这一层。
-  - 需要 nginx 的 stream 模块（脚本会装 `libnginx-mod-stream`）和 nginx 1.19.4 以上。条件不满足时自动退回不隐藏的方式，并在部署时提示。
-  - Cloudflare 的 IP 段在部署时更新。如果 CDN 线路突然连不上而其他线路正常，重跑一次脚本刷新 IP 段。
-- **伪装站随机生成**：每台机器的伪装页面在站名、主题、文章、版式、字体和配色上随机组合，不同部署之间不会出现一模一样的页面。
-  - 已有页面会沿用。想换成自己的站点，把文件放进 `/var/www/proxy-node/` 即可，重跑不会覆盖。
-  - 旧版本部署的固定页面（Field Notes）会在重跑时自动换掉。`--reset` 也会重新生成。
-
-### 没有自己的域名
-
-```bash
-sudo bash vps/node-setup.sh --no-domain
-```
-
-```bash
-sudo bash vps/node-setup.sh --target www.example.com
-```
-
-交互式向导第一步也可以选"没有域名"。
-
-> 无域名模式的抗封锁能力**弱于**有域名模式。有条件建议买一个域名（几美元一年），按上面的方式部署。
-
-和有域名时的区别：
-
-- **节点地址**：直接用 VPS 的公网 IPv4，不需要 Cloudflare，也不装 nginx 和 acme.sh。
-- **Reality 借用别人的网站**：
-  - 默认自动扫描 VPS 所在的 /24 网段，找同机房邻居里支持 TLS 1.3 + HTTP/2 + X25519、证书有效、首页不跳到别的域名的网站，选一个借用。Reality 直接转发到那个邻居 IP，所以 SNI 和 IP 在同一个机房、同一个 ASN。扫描大约要 1 分钟。
-  - 重跑时会先检查上次借用的网站，还能用就沿用，客户端不用改；不能用了才重新扫描，这时 SNI 会变，要重新导入节点。
-  - `--target` 可以手动指定网站，同样会做上面的检查，但一般和 VPS 不在同一个机房，SNI 和 IP 对不上，风险更高。不要用 `www.microsoft.com` 这类被大量使用的网站。
-- **Hysteria2**：
-  - 自签证书只写本机 IP，不冒充任何域名。客户端按 IP 连接，不发 SNI。证书 10 年有效，重跑时沿用，指纹不变。
-  - 默认开启 salamander 混淆，这样没有 SNI、证书和 QUIC 特征；`--no-obfs` 可以关掉。
-  - 分享链接带 `insecure=1&pinSHA256=指纹`，mihomo 配置带 `skip-cert-verify: true` 和 `fingerprint`。不认 `pinSHA256` 的客户端只是跳过证书校验。
-- **不能部署 CDN 线路**：`cdn-xhttp` / `cdn-ws` 需要自己的域名。VPS 的 IP 被墙后只能换 IP。
-- **以前用域名部署过**：会移除本脚本的 nginx 站点和 Let's Encrypt 证书。
-
-### 运行
+**常用命令**
 
 ```bash
 sudo bash vps/node-setup.sh
@@ -91,22 +45,20 @@ sudo bash vps/node-setup.sh -d a.example.com -c cdn.example.com -e me@example.co
 ```
 
 ```bash
-sudo bash vps/node-setup.sh info
-```
-
-```bash
 sudo node-setup redeploy
 ```
 
-第一条是交互式，按提示输入即可，Token 的输入不会显示在屏幕上。第二条用参数一次传完，Token 可以用环境变量 `CF_Token` 传入，全部参数见 `--help`。第三条用来重新显示节点信息。
+```bash
+sudo bash vps/node-setup.sh info
+```
 
-第四条是重新部署：域名、端口、协议、节点名都沿用上次的，UUID、密钥和密码也不变，什么都不用输入，客户端不用改。更新脚本后（`sudo node-setup update`）用它让改动生效。要改某一项就带上对应参数，例如 `sudo node-setup redeploy -p 8443`；加 `--reset` 会重新生成凭据。Cloudflare Token 从 acme.sh 保存的配置里读取，不会另存一份。
+依次为：交互式部署；参数部署（Token 可用环境变量 `CF_Token`，完整参数见 `--help`）；沿用全部配置和凭据重新部署（`sudo node-setup update` 后用它生效，`--reset` 重新生成凭据）；查看节点信息。
 
-Xray 默认安装**最新版**。v26.9.9 起它拒绝不带 X25519MLKEM768 的 Client Hello，所以客户端的 uTLS 指纹要选带它的：Shadowrocket 选 Chrome、Chrome140、Safari 或 Firefox（Chrome120 等旧指纹连不上），mihomo 用新版内核。客户端太旧时，用环境变量 `XRAY_VERSION=v26.7.28` 重跑，固定到没有这个限制的版本。
+**无域名模式**（`--no-domain`，或 `--target <网站>` 手动指定借用站点）：直接用 VPS 的 IPv4；Reality 默认扫描同 /24 网段借用邻居网站；Hysteria2 用自签证书并默认开启 salamander 混淆（`--no-obfs` 关闭）；不能部署 CDN 线路。抗封锁能力弱于有域名模式。
 
-系统的 OpenSSL 是 3.5 以上（如 Debian 13）时，伪装站也会开启 X25519MLKEM768，和新版浏览器访问真实网站时的握手一致；旧系统自动跳过。
+**Xray 版本**：默认装最新版。v26.9.9 起要求 X25519MLKEM768，Shadowrocket 指纹选 Chrome / Chrome140 / Safari / Firefox，mihomo 用新版内核；客户端太旧时用 `XRAY_VERSION=v26.7.28` 重跑。
 
-### 卸载（包括其他脚本装的代理）
+**卸载**
 
 ```bash
 sudo bash vps/node-setup.sh uninstall
@@ -116,80 +68,48 @@ sudo bash vps/node-setup.sh uninstall
 sudo bash vps/node-setup.sh uninstall --all -y
 ```
 
-第一条列出检测到的组件，按编号选择要卸载的。第二条卸载全部代理组件，不再确认。
+前者按编号选择，后者全部卸载不确认。能识别 Xray、sing-box、Hysteria、x-ui/3x-ui 等常见代理程序、面板、Docker 容器和端口跳跃规则。nginx、acme.sh、Caddy、cloudflared 不在"全部"范围内，需单独选；SSH 和防火墙规则不动。
 
-能检测的组件：
+## client/sing-box.json：经 Sub-Store 下发
 
-- **代理程序：** Xray、V2Ray、sing-box（含甬哥脚本）、Hysteria/Hysteria2、TUIC、Trojan/Trojan-Go、Shadowsocks、Juicity、NaiveProxy、gost、Brook、mihomo/Clash
-- **面板和一键脚本：** x-ui/3x-ui、s-ui、h-ui、v2ray-agent 八合一
-- **Docker：** 名字或镜像像代理的容器
-- **端口跳跃：** 其他脚本留下的 UDP 端口跳跃 NAT 规则
-- **本脚本的附加配置**
+分流与 mihomo 版一致，适用 sing-box 1.12+。
 
-对每个选中的组件，卸载会做这些事：
-
-- 停止并禁用对应的服务，删除 unit 文件
-- 结束残留进程
-- 删除程序和配置目录。属于 apt 软件包的文件改用 `apt purge` 卸载
-- 清理指向已删目录的快捷命令，例如 `/usr/bin/x-ui`、`sb`
-- 删除 root crontab 里引用了这些路径的行
-
-nginx、acme.sh、Caddy、cloudflared 可能另有用途，选"全部"时不会包含，需要按编号单独选。SSH 和防火墙的放行规则不会改动。
-
-## client/sing-box.json：sing-box 完整配置（经 Sub-Store 下发）
-
-分流逻辑与 `client/mihomo.yaml` 一致，按 sing-box 1.12+ 的格式写（1.14 下 `download_detour` 会提示已废弃，1.16 前都能用）。sing-box 不能像 mihomo 那样直接引用订阅，节点由 Sub-Store 的模板脚本插进去。
-
-### 在 Sub-Store 里配置
-
-1. 「文件」→ 新建，名称填 `sing-box`，来源选本地，把 `client/sing-box.json` 的内容粘贴进去。
-2. 在这个文件里添加「脚本操作」，链接填：
+1. Sub-Store「文件」新建 `sing-box`，来源本地，粘贴 `client/sing-box.json`。
+2. 添加「脚本操作」：
 
    ```
    https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳vmiss回落🏷ℹ️vmiss-🕳Oracle回落🏷ℹ️oracle_arm-(xhttp|vision)🕳nosla回落🏷ℹ️nosla-
    ```
 
-   含义：读取名为 `all` 的组合订阅，按节点名把节点插进三个回落组（规则和 mihomo 的 `filter` 相同）。
-3. 在模板脚本**后面**再添加一个「脚本操作」，选本地脚本，把 `client/sing-box-reject-empty.js` 的内容粘贴进去。回落组没匹配到节点时，它让这个组拒绝连接，而不是直连。
-4. 客户端（SFA / SFI / SFM 等）添加远程配置，链接为 `https://<Sub-Store 域名>:<端口>/<后端路径>/api/file/sing-box`。
+3. 在其后再加本地脚本 `client/sing-box-reject-empty.js`，使空回落组拒绝连接而非直连。
+4. 客户端添加远程配置：`https://<Sub-Store 域名>:<端口>/<后端路径>/api/file/sing-box`。
 
-### 和 mihomo 版的差别
+与 mihomo 版的差别：不支持 XHTTP 节点；回落组用大 `tolerance` 的 `urltest` 模拟，节点恢复后不自动切回；出现 `COMPATIBLE` 说明节点名或模板参数不对；`IP-ASN` 规则转换时跳过。
 
-- **不支持 XHTTP：** sing-box 没有 XHTTP 传输，Sub-Store 输出时会丢掉 `xhttp` 节点。东京只剩 vision；洛杉矶剩 reality → hysteria2 → cdn-ws。
-- **回落组：** sing-box 没有 `fallback`，用 `urltest` 加很大的 `tolerance`（10000 ms）代替，效果是按顺序用第一个可用节点。区别是前面的节点恢复后不会自动切回去，要等当前节点失效。
-- **空组：** 节点名都没匹配上时，模板脚本会往组里放一个名为 `COMPATIBLE` 的直连出站。第 3 步的脚本把它换成连不上的出站（`127.0.0.1:9`），效果和 mihomo 的 `empty-fallback: REJECT` 一样，不会用本机 IP 直连出去。sing-box 1.13 起没有 `block` 出站，所以这样写。看到 `COMPATIBLE` 说明节点名或模板脚本参数不对。
-- **自定义规则：** sing-box 读不了 Clash 的 classical 列表。本仓库的 Action（`.github/workflows/update-geosite-lists.yml`） 会把 `rule/*.list` 转成 `rule/sing-box/*.json`（sing-box 规则集源文件），配置里以 `format: source` 远程引用。列表改动推送后自动重新生成，不用改这里。Steam_CDN 里的 `IP-ASN,32590` sing-box 不支持，转换时会跳过。
-- **geosite / geoip：** 用 MetaCubeX meta-rules-dat 的 `sing` 分支 `.srs` 规则集，与 mihomo 用的是同一份数据，经 `🚀 手动选择` 下载。
+## 广告拦截
 
-## 广告拦截（mihomo / Shadowrocket / sing-box）
+三份配置均按域名拦截，规则位于直连规则之后、Google / AI 规则之前。
 
-三份客户端配置都按域名拦截广告和追踪，规则放在本地 / Tailscale 直连之后、美区锁定和 Google / AI 规则之前（geosite 的 `google` 本身含 Google 广告域名，放后面就拦不到）。
-
-| 客户端 | 规则源 | 关掉的方法 |
+| 客户端 | 规则源 | 关闭方法 |
 |---|---|---|
-| mihomo | geosite `category-ads-all`（MetaCubeX，约 900 条） | 策略组 `🛑 广告拦截` 切到 DIRECT |
-| Shadowrocket | blackmatrix7 `AdvertisingLite`（DOMAIN-SET 约 3.7 万域名 + 关键词 / IP 规则） | 策略组 `🛑 广告拦截` 切到 DIRECT |
-| sing-box | 同 mihomo 的 `category-ads-all.srs`，路由动作 `reject` | 选择器切不了 reject 动作，只能删掉这条规则 |
+| mihomo | geosite `category-ads-all` | `🛑 广告拦截` 切 DIRECT |
+| Shadowrocket | blackmatrix7 `AdvertisingLite` | `🛑 广告拦截` 切 DIRECT |
+| sing-box | `category-ads-all.srs` | 删除该规则 |
 
-- **误杀：** 把域名写在拦截规则前面，配置里留了示例注释。
-- **Shadowrocket 用 Lite 版：** 完整版 `Advertising_Domain.list` 约 6 MB，容易让 iOS 网络扩展超内存。
-- **拦不到的：** 和正文同域名下发的广告（YouTube 视频广告、B 站 / 微博信息流、开屏广告等）需要 MITM 加重写，这里没有做。
+误杀时在拦截规则前加放行。同域下发的广告（YouTube、B 站信息流等）需 MITM，未处理。
 
-## windows/windows-optimize.bat：Windows 优化工具（交互式）
+## windows/windows-optimize.bat：Windows 优化
 
-双击运行，自动请求管理员权限，按序号选择要执行的优化项（可多选，如 `1 4 6`；`a` 执行 1-9；`q` 退出）。首次执行前会把相关注册表备份到 `桌面\优化前注册表备份`。
+双击运行，自动提权，按序号多选（如 `1 4 6`；`a` 执行 1-9；`q` 退出），首次执行前备份注册表到 `桌面\优化前注册表备份`。
 
 | 序号 | 内容 |
 |---|---|
 | 1 | 性能：后台应用、视觉效果、电源模式 |
 | 2 | 服务与开机启动项 |
 | 3 | 卸载小组件 |
-| 4 | 隐私：搜索 |
-| 5 | 隐私：遥测、诊断、活动历史 |
-| 6 | 隐私：广告、推荐与推广内容 |
-| 7 | 隐私：输入、语音、Copilot、传递优化 |
+| 4–7 | 隐私：搜索 / 遥测 / 广告推荐 / 输入语音 Copilot |
 | 8 | 禁用数据收集计划任务 |
 | 9 | 清理临时文件 |
-| 10 | 移动用户文件夹（桌面、下载、文档、图片、音乐、视频）到其他盘 |
+| 10 | 移动用户文件夹到其他盘（默认 `D:\Users`，不含在 `a` 中） |
 
-序号 10 默认目标是 `D:\Users`，运行时可输入别的目录，并可选择是否把原有文件一起移过去（用 robocopy）。它改动文件位置，所以不包含在 `a` 里，需要单独选。如果开启了 OneDrive 的"备份桌面/文档/图片"，要先在 OneDrive 设置里关掉，否则会冲突。
+使用序号 10 前先关闭 OneDrive 的文件夹备份。
