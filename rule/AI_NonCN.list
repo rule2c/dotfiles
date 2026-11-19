@@ -1,7 +1,7 @@
 # AI 服务（非中国大陆），对应 mihomo 的 GEOSITE,category-ai-!cn，供 Shadowrocket 使用
-# Update 2026-11-08
+# Update 2026-11-19
 # 由 GitHub Action 每天从 https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ai-!cn.list 自动生成，请勿手改
-# 共 217 条
+# 共 218 条
 
 DOMAIN-SUFFIX,agentclientprotocol.com
 DOMAIN,ai.google.dev
@@ -98,6 +98,7 @@ DOMAIN-SUFFIX,dreamgen.com
 DOMAIN-SUFFIX,duck.ai
 DOMAIN-SUFFIX,elevenlabs.com
 DOMAIN-SUFFIX,elevenlabs.io
+DOMAIN-SUFFIX,elevenlabsusercontent.com
 DOMAIN-SUFFIX,envato-static.com
 DOMAIN-SUFFIX,envato.com
 DOMAIN-SUFFIX,envatousercontent.com
