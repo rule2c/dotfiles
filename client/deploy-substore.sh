@@ -139,8 +139,8 @@ BACKEND_PATH=$BP
 在 Sub-Store 里建一个名为 all 的组合订阅后，订阅链接为：
   mihomo（OpenClash / Clash Verge 的 proxy-providers）：
     $BASE$BP/download/collection/all?target=mihomo
-  Shadowrocket（policy-path）：
-    $BASE$BP/download/collection/all?target=shadowrocket
+  Shadowrocket（首页订阅；用 URI 格式，target=shadowrocket 的 Clash 格式会被识别成 Chrome120 指纹）：
+    $BASE$BP/download/collection/all?target=URI
   sing-box（只有节点，完整配置用下面的文件链接）：
     $BASE$BP/download/collection/all?target=sing-box
 
@@ -154,7 +154,7 @@ EOF
 SRC=$(cd "$(dirname "$0")" && pwd)
 OUT=/root/sub-store-ready; mkdir -p "$OUT"
 MIHOMO_SUB="$BASE$BP/download/collection/all?target=mihomo"
-SR_SUB="$BASE$BP/download/collection/all?target=shadowrocket"
+SR_SUB="$BASE$BP/download/collection/all?target=URI"
 if [[ -f "$SRC/mihomo.yaml" ]]; then
   sed "s#https://sub.example.com:8443/BACKEND_PATH/download/collection/all?target=mihomo#$MIHOMO_SUB#" "$SRC/mihomo.yaml" > "$OUT/mihomo.yaml"
 fi

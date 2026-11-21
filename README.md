@@ -56,7 +56,7 @@ sudo bash vps/node-setup.sh info
 
 **无域名模式**（`--no-domain`，或 `--target <网站>` 手动指定借用站点）：直接用 VPS 的 IPv4；Reality 默认扫描同 /24 网段借用邻居网站；Hysteria2 用自签证书并默认开启 salamander 混淆（`--no-obfs` 关闭）；不能部署 CDN 线路。抗封锁能力弱于有域名模式。
 
-**Xray 版本**：默认装最新版。v26.9.9 起要求 X25519MLKEM768，Shadowrocket 指纹选 Chrome / Chrome140 / Safari / Firefox，mihomo 用新版内核；客户端太旧时用 `XRAY_VERSION=v26.7.28` 重跑。
+**Xray 版本**：默认装最新版。v26.9.9 起要求 X25519MLKEM768，Shadowrocket 指纹选 Chrome / Chrome140 / Safari / Firefox（Sub-Store 订阅用 `target=URI`；`target=shadowrocket` 下发的 Clash 格式会被识别成 Chrome120），mihomo 用新版内核；客户端太旧时用 `XRAY_VERSION=v26.7.28` 重跑。
 
 **卸载**
 
