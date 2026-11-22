@@ -7,7 +7,7 @@ on:
     branches: [main]
     paths:                  # 手改列表或转换脚本后立刻重新生成 sing-box 规则集
       - "rule/*.list"
-      - "scripts/classical_to_singbox.py"
+      - ".github/scripts/classical_to_singbox.py"
   workflow_dispatch:
 
 concurrency:
@@ -25,12 +25,12 @@ jobs:
 
       - name: Convert geosite to classical lists
         run: |
-          python3 scripts/geosite_to_classical.py 'category-ai-!cn' rule/AI_NonCN.list \
+          python3 .github/scripts/geosite_to_classical.py 'category-ai-!cn' rule/AI_NonCN.list \
             --title 'AI 服务（非中国大陆），对应 mihomo 的 GEOSITE,category-ai-!cn，供 Shadowrocket 使用' \
             --min-rules 100
 
       - name: Convert classical lists to sing-box rule sets
-        run: python3 scripts/classical_to_singbox.py
+        run: python3 .github/scripts/classical_to_singbox.py
 
       - name: Commit if changed
         run: |

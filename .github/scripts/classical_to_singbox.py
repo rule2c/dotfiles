@@ -68,7 +68,7 @@ def convert(path):
 
 
 def main():
-    root = Path(__file__).resolve().parent.parent / "rule"
+    root = Path(__file__).resolve().parents[2] / "rule"
     out_dir = root / "sing-box"
     out_dir.mkdir(exist_ok=True)
 

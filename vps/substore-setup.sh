@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 在 Oracle 东京 AMD 上部署 Sub-Store，经 Cloudflare CDN 用 HTTPS 对外提供
 #
-# 用法：sudo CF_Token=<Cloudflare API Token> bash deploy-substore.sh <域名> [端口]
-#   例：sudo CF_Token=xxxx bash deploy-substore.sh sub.example.com 8443
+# 用法：sudo CF_Token=<Cloudflare API Token> bash vps/substore-setup.sh <域名> [端口]
+#   例：sudo CF_Token=xxxx bash vps/substore-setup.sh sub.example.com 8443
 #
 # 运行前：
 #   1. Cloudflare 添加 A 记录 sub.example.com → 东京 AMD 的 IP，【橙色云朵】
@@ -147,11 +147,11 @@ BACKEND_PATH=$BP
 完整配置文件（在 Sub-Store「文件」里新建后的链接）：
   OpenClash / Clash Verge：$BASE$BP/api/file/mihomo
   Shadowrocket：          $BASE$BP/api/file/shadowrocket
-  sing-box：              $BASE$BP/api/file/sing-box（文件需加模板脚本和 sing-box-reject-empty.js，见 README）
+  sing-box：              $BASE$BP/api/file/sing-box（文件需加模板脚本和 sing-box-reject-empty.js，见 client/README.md）
 EOF
 
-# 如果模板和脚本放在同一目录，顺手把链接填进去
-SRC=$(cd "$(dirname "$0")" && pwd)
+# 在仓库里运行时，顺手把链接填进 client/ 下的模板（单独下载本脚本时找不到模板则跳过）
+SRC=$(cd "$(dirname "$0")/../client" 2>/dev/null && pwd || echo /nonexistent)
 OUT=/root/sub-store-ready; mkdir -p "$OUT"
 MIHOMO_SUB="$BASE$BP/download/collection/all?target=mihomo"
 SR_SUB="$BASE$BP/download/collection/all?target=URI"
@@ -163,7 +163,7 @@ if [[ -f "$SRC/shadowrocket.conf" ]]; then
 fi
 # sing-box 模板由 Sub-Store 脚本按组合订阅名插入节点，不含链接，原样复制
 [[ -f "$SRC/sing-box.json" ]] && cp "$SRC/sing-box.json" "$OUT/sing-box.json"
-# 空回落组改为拒绝的脚本，要加在模板脚本之后（见 README）
+# 空回落组改为拒绝的脚本，要加在模板脚本之后（见 client/README.md）
 [[ -f "$SRC/sing-box-reject-empty.js" ]] && cp "$SRC/sing-box-reject-empty.js" "$OUT/sing-box-reject-empty.js"
 echo; cat "$INFO"; echo
 if [[ -n "$(ls -A "$OUT" 2>/dev/null)" ]]; then grn "已生成填好链接的配置：$OUT/（把内容粘贴到 Sub-Store 的「文件」里）"; fi
