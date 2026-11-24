@@ -159,6 +159,17 @@ rand_port(){
   done
 }
 
+# proto_canon 名字：--proto 里的别名 / 旧名换成正式名（reality、hy2、cdn-ws）；已删除的 reality-xhttp 输出空
+proto_canon(){
+  case $1 in
+    reality|vision)                 echo reality ;;
+    hy2|hysteria2|hysteria)         echo hy2 ;;
+    cdn-ws|ws|cw|cdn-xhttp|cx)      echo cdn-ws ;;
+    reality-xhttp|rx)               echo "" ;;
+    *)                              echo "$1" ;;
+  esac
+}
+
 # 部署向导：能选的都用编号选，命令行已给的参数作为默认值
 interactive(){
   [[ -t 0 ]] || die "缺少 -d 主域名（非交互环境请用参数传入；没有域名用 --no-domain，见 --help）"
@@ -198,7 +209,10 @@ interactive(){
   (( NODOMAIN )) && def="1 2"
   if [[ -n $PROTO ]]; then
     def=""
-    for ((i=0; i<max; i++)); do [[ ",${PROTO,,}," == *",${names[i]},"* ]] && def+="$((i+1)) "; done
+    local canon="," p
+    IFS=', ' read -ra _ps <<<"${PROTO,,}"
+    for p in "${_ps[@]}"; do canon+="$(proto_canon "$p"),"; done
+    for ((i=0; i<max; i++)); do [[ $canon == *",${names[i]},"* ]] && def+="$((i+1)) "; done
     def=${def% }; [[ -n $def ]] || def=1
   elif (( NO_HY2 )); then def="1 3"; (( NODOMAIN )) && def="1"
   fi
