@@ -1532,8 +1532,13 @@ for ipt in iptables ip6tables; do
   # 端口跳跃：把一段 UDP 端口转到 Hysteria2 实际端口
   $ipt -t nat -N HY2_HOP 2>/dev/null || $ipt -t nat -F HY2_HOP 2>/dev/null || continue
   $ipt -t nat -C PREROUTING -p udp -j HY2_HOP 2>/dev/null || $ipt -t nat -A PREROUTING -p udp -j HY2_HOP
-  # 只转目的地是本机的包：Docker / WireGuard 等经本机转发出去的 UDP 不受影响
-  [ -n "$HOP" ] && $ipt -t nat -A HY2_HOP -p udp -m addrtype --dst-type LOCAL --dport $HOP -j REDIRECT --to-ports $HOP_TO
+  # 只转目的地是本机的包：Docker / WireGuard 等经本机转发出去的 UDP 不受影响。
+  # 内核没有 addrtype 模块（OpenVZ / LXC 等）时退回不限定目的地址的规则，跳跃照常可用
+  if [ -n "$HOP" ]; then
+    $ipt -t nat -A HY2_HOP -p udp -m addrtype --dst-type LOCAL --dport $HOP -j REDIRECT --to-ports $HOP_TO 2>/dev/null \
+      || $ipt -t nat -A HY2_HOP -p udp --dport $HOP -j REDIRECT --to-ports $HOP_TO \
+      || echo "proxy-node-fw: $ipt 端口跳跃规则添加失败" >&2
+  fi
 done
 exit 0
 EOF
@@ -1557,6 +1562,7 @@ EOF
   systemctl daemon-reload
   systemctl enable proxy-node-fw >/dev/null 2>&1
   /usr/local/sbin/proxy-node-fw
+  check_hop
 
   cat > /etc/sysctl.d/99-proxy-node.conf <<'EOF'
 net.core.default_qdisc=fq
@@ -1565,6 +1571,24 @@ net.core.rmem_max=16777216
 net.core.wmem_max=16777216
 EOF
   sysctl --system >/dev/null 2>&1 || true
+}
+
+# 端口跳跃规则确实加上了：客户端带 ports / mport 时只连跳跃端口，规则没加上 Hysteria2 就整条不通
+check_hop(){
+  [[ -n $HOP ]] || return 0
+  local r
+  r=$(iptables -t nat -S HY2_HOP 2>/dev/null | grep -- '-j REDIRECT' || true)
+  [[ -n $r ]] || die "端口跳跃规则没加上（iptables -t nat -S HY2_HOP 里没有 REDIRECT）。可以用 --hop off 关闭端口跳跃后重跑"
+  if [[ $r != *addrtype* ]]; then
+    ylw "  内核不支持 addrtype 匹配，端口跳跃改用不限定目的地址的规则："
+    ylw "  本机转发出去的 UDP（Docker、WireGuard 等）访问外部 ${HOP} 端口时也会被转给 Hysteria2"
+  else
+    echo "  端口跳跃：UDP ${HOP} → ${HPORT}"
+  fi
+  if [[ -s /proc/net/if_inet6 ]] && command -v ip6tables >/dev/null 2>&1 \
+     && ! ip6tables -t nat -S HY2_HOP 2>/dev/null | grep -q -- '-j REDIRECT'; then
+    ylw "  IPv6 的端口跳跃规则没加上（不影响用 IPv4 连接的客户端）"
+  fi
 }
 
 # ------------------------------------------------------------------ 启动 ----
