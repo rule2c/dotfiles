@@ -3,10 +3,9 @@
 #  一键部署：Reality 偷自己 + Hysteria2 + Cloudflare CDN 备用（Debian 12/13、Ubuntu 22.04+，x86_64 / ARM64）
 #
 #  一台机器三条路，哪条被封就换哪条：
-#    1) VLESS + Vision + REALITY   TCP（默认 443）  偷自己：target 是本机 nginx + 真证书，SNI 和 IP 对得上
-#       └ 同端口 XHTTP + REALITY 备用（fallback）
-#    2) Hysteria2                  UDP（默认 443）  真证书，可选端口跳跃 / salamander 混淆
-#    3) XHTTP / WS + TLS 经 Cloudflare CDN（可选）  VPS 的 IP 被墙后仍可用
+#    1) reality：VLESS + Vision + REALITY  TCP（默认 443）  主力。偷自己：target 是本机 nginx + 真证书，SNI 和 IP 对得上
+#    2) hy2：Hysteria2                     UDP（默认 443）  TCP 被限速或封端口时用。真证书，可选端口跳跃 / salamander 混淆
+#    3) cdn-ws：VLESS + WS + TLS 经 Cloudflare CDN（可选）  IP 被封时的兜底
 #
 #  用法：
 #    sudo bash node-setup.sh                                   # 菜单 + 部署向导（按编号选择）
@@ -45,10 +44,8 @@
 #    -e, --email    申请证书用的邮箱，默认 admin@主域名
 #        --proto    要部署的协议，逗号分隔（默认全部；不给 -c 时没有 cdn-*）：
 #                     reality        VLESS + Vision + REALITY（必选：TCP 入口，CDN 回源也从它转给 nginx）
-#                     reality-xhttp  同端口 XHTTP + REALITY 备用
 #                     hy2            Hysteria2（同 --no-hy2 的反义）
-#                     cdn-xhttp      XHTTP + TLS 经 Cloudflare CDN（需要 -c）
-#                     cdn-ws         WS + TLS 经 Cloudflare CDN（需要 -c；Xray 已标记 WS 为过时）
+#                     cdn-ws         VLESS + WS + TLS 经 Cloudflare CDN（需要 -c）
 #                   例：--proto reality,hy2      只要 Reality 和 Hysteria2
 #    -n, --name     节点名前缀，默认取主域名第一段（无域名模式默认 node）
 #    -r, --region   节点名前的国旗：两位国家代码，如 us（🇺🇸）、jp（🇯🇵）；默认按本机 IP 自动识别，none 不加
@@ -80,7 +77,6 @@ XRAY_CFG=/usr/local/etc/xray/config.json
 SELF_BIN=/usr/local/bin/node-setup
 SELF_URL=${NODE_SETUP_URL:-https://raw.githubusercontent.com/rule2c/dotfiles/main/vps/node-setup.sh}
 GH_TOKEN_FILE=/root/.gh-token
-XHTTP_SOCK=/dev/shm/xray-xhttp.sock
 TARGET_PORT=18443          # 本机 nginx，只监听 127.0.0.1，是 Reality 的 target
 HTTPS_PORT=18444           # 有 CDN 时：18443 换成 stream 分流层，HTTPS 站点挪到这里
 REJECT_PORT=18445          # 有 CDN 时：不是 Cloudflare 来的 CDN 域名连接转到这里，握手被拒
@@ -193,20 +189,18 @@ interactive(){
   fi
 
   # ---- 协议（多选）
-  local names=(reality reality-xhttp hy2 cdn-xhttp cdn-ws)
-  local descs=("VLESS + Vision + REALITY  TCP（必选）"
-               "XHTTP + REALITY           同端口备用"
-               "Hysteria2                 UDP"
-               "XHTTP + TLS 经 Cloudflare CDN（IP 被墙后仍可用）"
-               "WS + TLS 经 Cloudflare CDN（兼容老客户端，Xray 已标记过时）")
-  local max=5; (( NODOMAIN )) && max=3      # 无域名不能用 CDN（4、5）
-  local def="1 2 3 4 5"
-  (( NODOMAIN )) && def="1 2 3"
+  local names=(reality hy2 cdn-ws)
+  local descs=("VLESS + Vision + REALITY  TCP 主力（必选）"
+               "Hysteria2                 UDP，TCP 被限速或封端口时用"
+               "VLESS + WS + TLS 经 Cloudflare CDN（IP 被封时的兜底）")
+  local max=3; (( NODOMAIN )) && max=2      # 无域名不能用 CDN（3）
+  local def="1 2 3"
+  (( NODOMAIN )) && def="1 2"
   if [[ -n $PROTO ]]; then
     def=""
     for ((i=0; i<max; i++)); do [[ ",${PROTO,,}," == *",${names[i]},"* ]] && def+="$((i+1)) "; done
     def=${def% }; [[ -n $def ]] || def=1
-  elif (( NO_HY2 )); then def="1 2 4 5"; (( NODOMAIN )) && def="1 2"
+  elif (( NO_HY2 )); then def="1 3"; (( NODOMAIN )) && def="1"
   fi
   echo
   echo "选择要部署的协议（多个编号用空格分隔）："
@@ -225,7 +219,7 @@ interactive(){
   done
   NO_HY2=0   # 以上面选的协议为准
 
-  # ---- CDN 域名：选了 4 / 5 才问
+  # ---- CDN 域名：选了 3 才问
   if [[ $PROTO == *cdn-* ]]; then
     echo
     ylw "CDN 域名：Cloudflare【橙色云朵】，A 记录指向本机，必须和主域名不同"
@@ -398,15 +392,13 @@ guess_deploy(){
   fi
   D_NODE=$name
   D_PROTO=reality
-  grep -q -- '-reality-xhttp", type' "$INFO" && D_PROTO+=,reality-xhttp
   if h=$(grep -m1 -- '-hysteria2", type' "$INFO"); then
     D_PROTO+=,hy2
     D_HPORT=$(sed -n 's/.*, port: \([0-9]*\),.*/\1/p' <<<"$h")
     D_HOP=$(sed -n 's/.*, ports: \([0-9]*-[0-9]*\),.*/\1/p' <<<"$h"); D_HOP=${D_HOP:-off}
     [[ $h == *"obfs: salamander"* ]] && D_OBFS=1 || D_OBFS=0
   fi
-  grep -q -- '-cdn-xhttp", type' "$INFO" && D_PROTO+=,cdn-xhttp
-  grep -q -- '-cdn-ws", type' "$INFO" && D_PROTO+=,cdn-ws
+  grep -q -- '-cdn-\(ws\|xhttp\)", type' "$INFO" && D_PROTO+=,cdn-ws
   # 证书上次是用 80 端口验证的（--http01）
   if (( ! D_NODOMAIN )) && grep -qs "^Le_Webroot='/" /root/.acme.sh/*/*.conf; then D_HTTP01=1; fi
   return 0
@@ -471,25 +463,26 @@ main_menu(){
   esac
 }
 
-# 把 --proto / --no-hy2 / -c 解析成 P_RX P_CX P_CW 和 NO_HY2
+# 把 --proto / --no-hy2 / -c 解析成 P_CW 和 NO_HY2
 resolve_proto(){
-  P_RX=0 P_CX=0 P_CW=0
+  P_CW=0
   local list=$PROTO p have_r=0 hy=0
   if [[ -z $list ]]; then
-    list="reality,reality-xhttp"
+    list="reality"
     (( NO_HY2 )) || list+=",hy2"
-    [[ -n $CDN ]] && list+=",cdn-xhttp,cdn-ws"
+    [[ -n $CDN ]] && list+=",cdn-ws"
   fi
   IFS=', ' read -ra _ps <<<"${list,,}"
   for p in "${_ps[@]}"; do
     case $p in
       "") ;;
       reality|vision)          have_r=1 ;;
-      reality-xhttp|rx)        P_RX=1 ;;
       hy2|hysteria2|hysteria)  hy=1 ;;
-      cdn-xhttp|cx)            P_CX=1 ;;
       cdn-ws|ws|cw)            P_CW=1 ;;
-      *) die "未知协议：$p（可选：reality, reality-xhttp, hy2, cdn-xhttp, cdn-ws）" ;;
+      # 旧版的 XHTTP 线路已删除：上次部署的设置里有就忽略（cdn-xhttp 换成 cdn-ws），不报错
+      reality-xhttp|rx)        ylw "  reality-xhttp 已不再提供，忽略" ;;
+      cdn-xhttp|cx)            ylw "  cdn-xhttp 已不再提供，改用 cdn-ws"; P_CW=1 ;;
+      *) die "未知协议：$p（可选：reality, hy2, cdn-ws）" ;;
     esac
   done
   (( have_r )) || die "reality 必须保留：它是 TCP 入口（CDN 回源也经它转给 nginx）"
@@ -497,16 +490,14 @@ resolve_proto(){
     (( NO_HY2 && hy )) && die "--no-hy2 和 --proto 里的 hy2 冲突"
     (( hy )) && NO_HY2=0 || NO_HY2=1
   fi
-  if (( P_CX || P_CW )); then
-    (( ! NODOMAIN )) || die "无域名模式不能用 cdn-xhttp / cdn-ws（CDN 需要自己的域名）"
-    [[ -n $CDN ]] || die "选了 cdn-xhttp / cdn-ws，但没给 CDN 域名（-c）"
+  if (( P_CW )); then
+    (( ! NODOMAIN )) || die "无域名模式不能用 cdn-ws（CDN 需要自己的域名）"
+    [[ -n $CDN ]] || die "选了 cdn-ws，但没给 CDN 域名（-c）"
   elif [[ -n $CDN ]]; then
-    die "给了 CDN 域名 $CDN，但 --proto 里没有 cdn-xhttp / cdn-ws（不要 CDN 就去掉 -c）"
+    die "给了 CDN 域名 $CDN，但 --proto 里没有 cdn-ws（不要 CDN 就去掉 -c）"
   fi
   PROTOS="reality"
-  (( P_RX )) && PROTOS+=" reality-xhttp"
   (( NO_HY2 )) || PROTOS+=" hy2"
-  (( P_CX )) && PROTOS+=" cdn-xhttp"
   (( P_CW )) && PROTOS+=" cdn-ws"
   grn "  部署协议：$PROTOS"
 }
@@ -819,12 +810,11 @@ load_or_gen_state(){
     [[ -n $PRIV && -n $PUB ]] || die "解析 xray x25519 输出失败：$keys"
   fi
   SID=${SID:-$(openssl rand -hex 8)}
-  XPATH=${XPATH:-$(openssl rand -hex 8)}
   WSPATH=${WSPATH:-$(openssl rand -hex 8)}
   HY_PASS=${HY_PASS:-$(openssl rand -hex 16)}
   OBFS_PASS=${OBFS_PASS:-$(openssl rand -hex 16)}
   ( umask 077
-    printf '%s=%q\n' UUID "$UUID" PRIV "$PRIV" PUB "$PUB" SID "$SID" XPATH "$XPATH" \
+    printf '%s=%q\n' UUID "$UUID" PRIV "$PRIV" PUB "$PUB" SID "$SID" \
       WSPATH "$WSPATH" HY_PASS "$HY_PASS" OBFS_PASS "$OBFS_PASS" \
       SAVED_DOMAIN "$DOMAIN" SAVED_CDN "$CDN" SAVED_CERTS "$CERT_MAIN${CERT_CDN:+ $CERT_CDN}" \
       SAVED_RSNI "$( (( NODOMAIN )) && echo "$RSNI")" SAVED_RDEST "$( (( NODOMAIN )) && echo "$R_DEST")" > "$STATE" )
@@ -1156,26 +1146,7 @@ $common
 EOF
   [[ -n $CDN ]] || return 0
   # Cloudflare 回源时 SNI 是 CDN 域名，不匹配 Reality 的 serverNames，会被原样转到这里
-  local loc_x="" loc_w=""
-  (( P_CX )) && loc_x=$(cat <<EOF
-    # 用 grpc_pass（RPRX #4113："Nginx 推荐 grpc_pass"）；实测 h2 直连和 HTTP/1.1 回源下
-    # packet-up / stream-up / stream-one 都通，proxy_pass 只有 packet-up 能通
-    location /$XPATH {
-        client_max_body_size     0;
-        grpc_buffer_size         16k;
-        grpc_socket_keepalive    on;
-        grpc_read_timeout        1h;
-        grpc_send_timeout        1h;
-        grpc_set_header Connection         "";
-        grpc_set_header X-Real-IP          \$remote_addr;
-        grpc_set_header X-Forwarded-For    \$proxy_add_x_forwarded_for;
-        grpc_set_header X-Forwarded-Proto  \$scheme;
-        grpc_set_header Host               \$host;
-        grpc_pass unix:$XHTTP_SOCK;
-    }
-
-EOF
-)
+  local loc_w=""
   (( P_CW )) && loc_w=$(cat <<EOF
     location /$WSPATH {
         if (\$http_upgrade != "websocket") { return 404; }
@@ -1193,7 +1164,7 @@ EOF
 )
   cat >> "$NGX_SITE" <<EOF
 
-# CDN 回源：XHTTP（推荐）+ WS（兼容老客户端），按 --proto 生成
+# CDN 回源：WS
 server {
     listen 127.0.0.1:$lp ssl$h2l$pp;
     $h2d
@@ -1203,17 +1174,6 @@ server {
 $common
     $guard
 
-    # 以下 XHTTP 反代参数取自 Xray-core discussions #4118（XHTTP 五合一配置）
-    http2_max_concurrent_streams 1024;
-    http2_body_preread_size      128k;
-    keepalive_timeout            600s;
-    keepalive_requests           2048;
-    client_body_buffer_size      1m;
-    client_body_timeout          600s;
-    client_header_timeout        300s;
-    large_client_header_buffers  8 16k;
-
-$loc_x
 $loc_w
 
     location / { try_files \$uri \$uri/ =404; }
@@ -1385,22 +1345,7 @@ write_xray(){
   # 地区和 ASN 判定可能不同。domainStrategy=UseIPv4 让域名只解析 A 记录；
   # 客户端直接给的 IPv6 地址（不带域名）拒绝掉，让应用回落到 IPv4。Hysteria2 同样设成只用 IPv4
   local sniff='"sniffing": { "enabled": true, "destOverride": ["http","tls","quic"], "routeOnly": true }'
-  local ws_inbound="" xhttp_inbound="" fallback=""
-  # reality-xhttp：Vision 入站把非 Vision 流量 fallback 给 XHTTP 入站；cdn-xhttp：nginx 直接转给它
-  (( P_RX )) && fallback=',
-        "fallbacks": [ { "dest": "'"$XHTTP_SOCK"'" } ]'
-  (( P_RX || P_CX )) && xhttp_inbound=$(cat <<EOF
-,
-    {
-      "tag": "xhttp",
-      "listen": "$XHTTP_SOCK,0666",
-      "protocol": "vless",
-      "settings": { "clients": [ { "id": "$UUID" } ], "decryption": "none" },
-      "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/$XPATH" } },
-      $sniff
-    }
-EOF
-)
+  local ws_inbound=""
   (( P_CW )) && ws_inbound=$(cat <<EOF
 ,
     {
@@ -1426,7 +1371,7 @@ EOF
       "protocol": "vless",
       "settings": {
         "clients": [ { "id": "$UUID", "flow": "xtls-rprx-vision" } ],
-        "decryption": "none"$fallback
+        "decryption": "none"
       },
       "streamSettings": {
         "network": "raw",
@@ -1440,7 +1385,7 @@ EOF
         }
       },
       $sniff
-    }$xhttp_inbound$ws_inbound
+    }$ws_inbound
   ],
   "outbounds": [
     { "tag": "direct", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4" } },
@@ -1627,18 +1572,14 @@ write_info(){
   {
     echo "===== Clash / mihomo（放到 proxies: 下）====="
     echo "  - {name: \"$N-reality\", type: vless, server: $SERVER, port: $RPORT, uuid: $UUID, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: $R_SNI, client-fingerprint: chrome, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
-    (( P_RX )) && echo "  - {name: \"$N-reality-xhttp\", type: vless, server: $SERVER, port: $RPORT, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $R_SNI, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, mode: auto}, reality-opts: {public-key: $PUB, short-id: \"$SID\", support-x25519mlkem768: true}}"
     (( NO_HY2 )) || echo "  - {name: \"$N-hysteria2\", type: hysteria2, server: $SERVER, port: $HPORT, password: $HY_PASS${HY_SNI:+, sni: $HY_SNI}$hy_extra_yaml}"
-    (( P_CX )) && echo "  - {name: \"$N-cdn-xhttp\", type: vless, server: $CDN, port: 443, uuid: $UUID, network: xhttp, tls: true, udp: true, servername: $CDN, client-fingerprint: chrome, xhttp-opts: {path: /$XPATH, host: $CDN, mode: auto}}"
     (( P_CW )) && echo "  - {name: \"$N-cdn-ws\", type: vless, server: $CDN, port: 443, uuid: $UUID, udp: true, tls: true, servername: $CDN, client-fingerprint: chrome, network: ws, ws-opts: {path: /$WSPATH, headers: {Host: $CDN}}}"
     echo
     echo "===== 分享链接（v2rayN / NekoBox / Shadowrocket 等）====="
     echo "vless://$UUID@$SERVER:$RPORT?encryption=none&security=reality&sni=$R_SNI&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=tcp&flow=xtls-rprx-vision#$U-reality"
-    (( P_RX )) && echo "vless://$UUID@$SERVER:$RPORT?encryption=none&security=reality&sni=$R_SNI&fp=chrome&pbk=$PUB&sid=$SID&support-x25519mlkem768=true&type=xhttp&path=%2F$XPATH&mode=auto#$U-reality-xhttp"
     local hy_q="${HY_SNI:+&sni=$HY_SNI}$hy_extra_uri"
     (( NO_HY2 )) || echo "hysteria2://$HY_PASS@$SERVER:$HPORT/?${hy_q#&}#$U-hysteria2"
     if [[ -n $CDN ]]; then
-      (( P_CX )) && echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=xhttp&host=$CDN&path=%2F$XPATH&mode=auto#$U-cdn-xhttp"
       (( P_CW )) && echo "vless://$UUID@$CDN:443?encryption=none&security=tls&sni=$CDN&fp=chrome&type=ws&host=$CDN&path=%2F$WSPATH#$U-cdn-ws"
     fi
   } > "$INFO"
@@ -1823,7 +1764,7 @@ remove_self(){
     # acme.sh 为续期保存的 Cloudflare Token
     [[ -f /root/.acme.sh/account.conf ]] && sed -i '/^SAVED_CF_/d' /root/.acme.sh/account.conf
   fi
-  rm -rf "$SSL" "$WEB" "$WORKDIR" "$XHTTP_SOCK" /etc/sysctl.d/99-proxy-node.conf /usr/local/bin/proxy-node-cert-reload "$SELF_BIN"
+  rm -rf "$SSL" "$WEB" "$WORKDIR" /dev/shm/xray-xhttp.sock /etc/sysctl.d/99-proxy-node.conf /usr/local/bin/proxy-node-cert-reload "$SELF_BIN"
 }
 
 remove_nat(){

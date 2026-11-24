@@ -4,14 +4,15 @@
 
 ## node-setup.sh：节点一键部署
 
-一台 VPS 提供多条线路，出站统一只走 IPv4：
+一台 VPS 只提供三条线路，出站统一只走 IPv4：
 
 | 线路 | 端口 | 用途 |
 |---|---|---|
-| VLESS + Vision + REALITY（偷自己） | TCP 443 | 主力 |
-| XHTTP + REALITY | TCP 443 | 同端口备用 |
-| Hysteria2 | UDP 443，跳跃 20000-40000 | TCP 被封或限速时 |
-| XHTTP / WS + TLS 经 Cloudflare | CDN 443 | IP 被墙后仍可用（可选） |
+| reality：VLESS + Vision + REALITY（偷自己） | TCP 443 | 主力，TCP 直连 |
+| hysteria2 | UDP 443，跳跃 20000-40000 | UDP 直连，TCP 被限速或封端口时用 |
+| cdn-ws：VLESS + WS + TLS 经 Cloudflare | CDN 443 | IP 被封时的兜底（可选） |
+
+旧版部署过的 reality-xhttp / cdn-xhttp，`redeploy` 时自动去掉（cdn-xhttp 换成 cdn-ws），客户端删掉这两个节点即可。
 
 **准备**
 

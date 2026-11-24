@@ -79,7 +79,7 @@ proxy-providers:
 # 回落组都设了 empty-fallback: REJECT：节点名没匹配上时直接断开，不会悄悄变成直连
 # 回落顺序 = 节点在 Sub-Store 里的排列顺序
 #   东京：xhttp → vision
-#   洛杉矶：reality → reality-xhttp → hysteria2 → cdn-xhttp → cdn-ws
+#   洛杉矶：reality → hysteria2 → cdn-ws
 # 单个节点只出现在各自的回落组里；其他组只引用回落组，避免重复
 # 美国走哪台只在 🇺🇸 美国节点 里选，🚀 手动选择 只在 美国 / 日本 之间选，关联服务始终同一出口
 proxy-groups:
@@ -91,7 +91,7 @@ proxy-groups:
     type: select
     proxies: [DIRECT]
 
-  # 洛杉矶 vmiss：5 条线路按顺序回落（同一出口 IP）
+  # 洛杉矶 vmiss：3 条线路按顺序回落（同一出口 IP）
   - name: 🇺🇸 vmiss回落
     type: fallback
     use: [substore]
@@ -109,7 +109,7 @@ proxy-groups:
     url: https://www.gstatic.com/generate_204
     interval: 180
 
-  # 洛杉矶 nosla：5 条线路按顺序回落（同一出口 IP）
+  # 洛杉矶 nosla：3 条线路按顺序回落（同一出口 IP）
   - name: 🇺🇸 nosla回落
     type: fallback
     use: [substore]
