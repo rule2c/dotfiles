@@ -31,6 +31,8 @@ $undoFile = Join-Path $bk 'undo.json'
 $script:ok = 0; $script:fail = @()
 $script:undo = New-Object System.Collections.ArrayList
 $script:seen = @{}
+$script:check = $false   # 状态检查模式：S/Svc/DisTask/Remove-App 只比对不修改
+$script:match = 0; $script:diffN = 0
 
 # 把控制台字体换成等宽中文字体（新宋体），解决中英文混排错位、行距不均。
 # 只对传统控制台窗口(conhost)当场生效；Windows Terminal 会忽略，不影响使用。
@@ -135,7 +137,24 @@ function Rec-Svc($name) {
 }
 
 # ------------------------------------------------------------
+function Fmt($v) {
+    if ($null -eq $v) { return '(不存在)' }
+    if ($v -is [array]) { return '[' + (@($v | ForEach-Object { [string]$_ }) -join ',') + ']' }
+    [string]$v
+}
+function Chk($label, $cur, $want) {
+    $c = Fmt $cur; $w = Fmt $want
+    if ($c -eq $w) { $script:match++ }
+    else { $script:diffN++; Write-Host "  [未生效] $label : 当前 $c，目标 $w" -ForegroundColor Yellow }
+}
 function S($path, $name, $val, $type = 'DWord') {
+    if ($script:check) {
+        $k = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        $cur = $null
+        if ($k -and ($k.GetValueNames() -contains $name)) { $cur = $k.GetValue($name, $null, 'DoNotExpandEnvironmentNames') }
+        Chk "$path\$name" $cur $val
+        return
+    }
     try {
         $isNew = -not (Test-Path -LiteralPath $path)
         if ($isNew) { Rec-Key $path }
@@ -147,6 +166,7 @@ function S($path, $name, $val, $type = 'DWord') {
 }
 function Svc($name) {
     if (-not (Get-Service $name -ErrorAction SilentlyContinue)) { Write-Host "  服务 $name 不存在，跳过" -ForegroundColor DarkGray; return }
+    if ($script:check) { Chk "服务 $name" ([string](Get-Service $name).StartType) 'Disabled'; return }
     Rec-Svc $name
     try {
         Set-Service $name -StartupType Disabled -ErrorAction Stop   # 先禁用再停止，避免被触发器重新拉起
@@ -161,6 +181,7 @@ function DisTask($path, $name) {
     $tasks = @(Get-ScheduledTask @q)
     if (-not $tasks.Count) { Write-Host "  任务 $path$name 不存在，跳过" -ForegroundColor DarkGray; return }
     foreach ($tk in $tasks) {
+        if ($script:check) { Chk "任务 $($tk.TaskPath)$($tk.TaskName)" ([string]$tk.State) 'Disabled'; continue }
         Add-Undo "task|$($tk.TaskPath)$($tk.TaskName)" ([pscustomobject]@{ t = 'task'; path = $tk.TaskPath; name = $tk.TaskName; enabled = ($tk.State -ne 'Disabled') })
         try { Disable-ScheduledTask -InputObject $tk -ErrorAction Stop | Out-Null; $script:ok++ }
         catch { $script:fail += "任务 $($tk.TaskPath)$($tk.TaskName) : $($_.Exception.Message)" }
@@ -168,6 +189,7 @@ function DisTask($path, $name) {
 }
 function Remove-App($pkg, $label) {
     $ap = @(Get-AppxPackage $pkg)
+    if ($script:check) { Chk $label $(if ($ap.Count) { '已安装' } else { '未安装' }) '未安装'; return }
     if (-not $ap.Count) { Write-Host "  $label 未安装，跳过" -ForegroundColor DarkGray; return }
     Add-Undo "appx|$pkg" ([pscustomobject]@{ t = 'appx'; name = $label })
     try { $ap | Remove-AppxPackage -ErrorAction Stop; $script:ok++ } catch { $script:fail += "卸载 $label : $($_.Exception.Message)" }
@@ -179,16 +201,32 @@ $P = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows'
 $UP = 'HKCU:\Software\Policies\Microsoft\Windows'
 
 # ------------------------------------------------------------
+function Get-Overlay {
+    # 当前电源模式 GUID；读不到返回 $null
+    $g = [regex]::Match((powercfg /overlaygetactive 2>$null | Out-String), '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}').Value
+    if (-not $g) { $g = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' -ErrorAction SilentlyContinue).ActiveOverlayAcPowerScheme }
+    if ($g) { [string]$g } else { $null }
+}
 function Opt1 {
+    # 后台应用：用户级总开关已从新版 Windows 11 设置中移除，可能不再生效，因此再用策略强制禁止 + 白名单放行。
+    # 这两项只管商店/MSIX 应用，微信、QQ 等普通桌面程序不受影响。
+    $bgAllow = @('Claude_pzs8sxrjxfjjc')   # 需要后台运行的应用（包系列名，可自行添加）
+    $bgSystem = @('Microsoft.Windows.ShellExperienceHost_cw5n1h2txyewy', 'Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy',
+                  'Microsoft.Windows.Search_cw5n1h2txyewy', 'MicrosoftWindows.Client.CBS_cw5n1h2txyewy',
+                  'MicrosoftWindows.Client.Core_cw5n1h2txyewy', 'Microsoft.SecHealthUI_8wekyb3d8bbwe')   # 开始菜单/搜索/通知/安全中心
     S "$CV\BackgroundAccessApplications" GlobalUserDisabled 1
     S "$CV\Search" BackgroundAppGlobalToggle 0
-    # 例外：允许这些应用在后台运行（包系列名，可自行添加）
-    $bgAllow = @('Claude_pzs8sxrjxfjjc')
     foreach ($pfn in $bgAllow) {
         S "$CV\BackgroundAccessApplications\$pfn" Disabled 0
         S "$CV\BackgroundAccessApplications\$pfn" DisabledByUser 0
     }
-    S "$P\AppPrivacy" LetAppsRunInBackground_ForceAllowTheseApps ([string[]]$bgAllow) 'MultiString'
+    S "$P\AppPrivacy" LetAppsRunInBackground 2   # 2 = 强制禁止（白名单除外）
+    S "$P\AppPrivacy" LetAppsRunInBackground_ForceAllowTheseApps ([string[]]($bgAllow + $bgSystem)) 'MultiString'
+
+    # Edge：关闭窗口后不在后台常驻、开机不预加载（edge://settings 会显示「由你的组织管理」）
+    S 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' BackgroundModeEnabled 0
+    S 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' StartupBoostEnabled 0
+
     S "$CV\Explorer\VisualEffects" VisualFXSetting 3
     S 'HKCU:\Control Panel\Desktop' UserPreferencesMask ([byte[]](0x90, 0x12, 0x03, 0x80, 0x10, 0x00, 0x00, 0x00)) 'Binary'
     S 'HKCU:\Control Panel\Desktop' FontSmoothing '2' 'String'
@@ -202,13 +240,17 @@ function Opt1 {
     S 'HKCU:\Software\Microsoft\Windows\DWM' EnableAeroPeek 0
 
     # 电源模式「最佳性能」：只在「平衡」电源计划下可用；笔记本用电池时跳过，免得把电池续航也牺牲掉
+    if ($script:check) {
+        $g = Get-Overlay
+        if ($g) { Chk '电源模式' $g 'ded574b5-45a0-4f42-8737-46345c09c238' } else { Write-Host '  电源模式: 无法读取当前值' -ForegroundColor DarkGray }
+        return
+    }
     $onBattery = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Where-Object { $_.BatteryStatus -in 1, 4, 5, 10, 11 }).Count -gt 0
     if ($onBattery) {
         Write-Host '  正在使用电池，跳过电源模式（插上电源后再执行本项）' -ForegroundColor Yellow
     } else {
         if (-not $script:seen.ContainsKey('power')) {
-            $g = [regex]::Match((powercfg /overlaygetactive 2>$null | Out-String), '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}').Value
-            if (-not $g) { $g = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' -ErrorAction SilentlyContinue).ActiveOverlayAcPowerScheme }
+            $g = Get-Overlay
             if (-not $g) { $g = '00000000-0000-0000-0000-000000000000' }   # 默认的「平衡」模式
             Add-Undo 'power' ([pscustomobject]@{ t = 'power'; value = [string]$g })
         }
@@ -224,7 +266,8 @@ function Opt2 {
     Svc MapsBroker         # 离线地图
     Svc dmwappushservice   # WAP 推送（遥测相关；公司电脑如需 Intune/MDM 注册请跳过本项）
     # WerSvc 默认就是按需触发，禁用几乎不省资源；错误报告已在序号 5 用策略关闭
-    if ((Read-Host '  同时禁用打印服务？禁用后无法打印，也不能「打印到 PDF」(y/N)').Trim().ToLower() -eq 'y') { Svc Spooler }
+    if ($script:check) { Write-Host ('  打印服务（可选项，不计入）: ' + (Get-Service Spooler -ErrorAction SilentlyContinue).StartType) -ForegroundColor DarkGray }
+    elseif ((Read-Host '  同时禁用打印服务？禁用后无法打印，也不能「打印到 PDF」(y/N)').Trim().ToLower() -eq 'y') { Svc Spooler }
 
     # 音频托盘程序自启：只处理确实存在的启动项，按它所在位置写对应的 StartupApproved 键
     # （可在任务管理器「启动应用」里恢复。Waves 在部分戴尔机型上负责音效/麦克风降噪，关闭后如有异常请恢复）
@@ -235,7 +278,13 @@ function Opt2 {
     foreach ($n in 'RTHDVCPL', 'RtHDVBg_WAVES_SKYLAKE', 'WavesSvc') {
         foreach ($r in $runs) {
             $rk = Get-Item -LiteralPath $r[0] -ErrorAction SilentlyContinue
-            if ($rk -and ($rk.GetValueNames() -contains $n)) { S $r[1] $n ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) 'Binary' }
+            if (-not ($rk -and ($rk.GetValueNames() -contains $n))) { continue }
+            if ($script:check) {
+                # 首字节为奇数即已禁用（任务管理器禁用时后面会带时间戳，不能整串比较）
+                $ak = Get-Item -LiteralPath $r[1] -ErrorAction SilentlyContinue
+                $b = $null; if ($ak -and ($ak.GetValueNames() -contains $n)) { $b = $ak.GetValue($n) }
+                Chk "开机启动项 $n" $(if ($b -and ($b[0] % 2)) { '已禁用' } else { '已启用' }) '已禁用'
+            } else { S $r[1] $n ([byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) 'Binary' }
         }
     }
 
@@ -245,7 +294,7 @@ function Opt2 {
 
 # ------------------------------------------------------------
 function Opt3 {
-    Get-Process Widgets, WidgetService, WidgetBoard -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    if (-not $script:check) { Get-Process Widgets, WidgetService, WidgetBoard -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
     S 'HKLM:\SOFTWARE\Policies\Microsoft\Dsh' AllowNewsAndInterests 0   # 策略禁用小组件，防止商店更新后又装回来
     Remove-App MicrosoftWindows.Client.WebExperience 'Windows Web Experience Pack（小组件）'
 }
@@ -367,14 +416,16 @@ function Clear-Dir($dir, $cutoff, $top = $false) {
         try {
             if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) {
                 # 目录联接/符号链接：只删链接本身，不进入目标（PS 5.1 的 Remove-Item -Recurse 会删到链接目标里去）
-                if ($t -lt $cutoff) { $it.Delete() }
+                if ($t -lt $cutoff -and -not $script:check) { $it.Delete() }
             } elseif ($it.PSIsContainer) {
                 Clear-Dir $it.FullName $cutoff
-                if ($t -lt $cutoff) { $it.Delete() }   # 非递归删除，目录里还有文件时会失败并跳过
+                if ($t -lt $cutoff -and -not $script:check) { $it.Delete() }   # 非递归删除，目录里还有文件时会失败并跳过
             } elseif ($t -lt $cutoff) {
-                if ($it.IsReadOnly) { $it.IsReadOnly = $false }
                 $len = $it.Length
-                $it.Delete()
+                if (-not $script:check) {
+                    if ($it.IsReadOnly) { $it.IsReadOnly = $false }
+                    $it.Delete()
+                }
                 $script:freed += $len
             }
         } catch {}   # 占用中的文件跳过
@@ -387,6 +438,7 @@ function Opt9 {
     foreach ($d in (@($env:TEMP, "$env:windir\Temp") | Select-Object -Unique)) {
         if (Test-Path -LiteralPath $d) { Clear-Dir $d $cutoff $true }
     }
+    if ($script:check) { Write-Host ('  可清理约 {0:N0} MB（清理类，不计入）' -f ($script:freed / 1MB)) -ForegroundColor DarkGray; return }
     Write-Host ('  释放 {0:N0} MB（24 小时内的文件和占用中的文件已跳过）' -f ($script:freed / 1MB))
     $script:ok++
 }
@@ -564,7 +616,7 @@ function Show-Result {
 # ------------------------------------------------------------
 # 菜单：序号 -> (名称, 说明, 函数)
 $menu = [ordered]@{
-    '1' = @('性能：后台应用、视觉效果、电源', '关闭后台应用(Claude 除外)、精简动画与透明效果、最佳性能电源模式（平衡计划且插电时）', ${function:Opt1})
+    '1' = @('性能：后台应用、Edge、视觉效果、电源', '策略禁止商店应用后台运行（Claude 和系统组件除外）、关闭 Edge 后台常驻与启动加速、精简动画与透明效果、最佳性能电源模式（平衡计划且插电时）', ${function:Opt1})
     '2' = @('服务、开机启动与快速启动',       '禁用遥测/地图/WAP 推送服务，关闭 Realtek/Waves 音频托盘自启，关闭快速启动；打印服务单独询问', ${function:Opt2})
     '3' = @('卸载小组件 (Widgets)',           '结束并卸载 Windows 小组件，并用策略防止重新安装', ${function:Opt3})
     '4' = @('隐私：搜索',                     '关闭 Bing/云搜索/搜索要点/搜索历史', ${function:Opt4})
@@ -586,7 +638,7 @@ function Show-Menu {
         Write-Host ("      {0}" -f $menu[$k][1]) -ForegroundColor DarkGray
         Write-Host ''
     }
-    Write-Host '  [a] 全部执行 (1-9，不含 10)    [r] 恢复到优化前    [q] 退出' -ForegroundColor Yellow
+    Write-Host '  [a] 全部执行 (1-9，不含 10)   [c] 状态检查   [r] 恢复到优化前   [q] 退出' -ForegroundColor Yellow
     if ($script:undo.Count) { Write-Host "  已记录 $($script:undo.Count) 项改动，可用 r 恢复" -ForegroundColor DarkGray }
     Write-Host '  可多选，用空格或逗号分隔，例如: 1 4 6' -ForegroundColor Yellow
 }
@@ -597,6 +649,22 @@ while ($true) {
     $in = (Read-Host "`n请输入序号").Trim().ToLower()
     if ($in -in 'q', '0', 'quit', 'exit') { break }
     if ($in -eq '') { continue }
+
+    if ($in -eq 'c') {
+        # 只读：逐项比对 1-9 的当前值与目标值，大版本更新后用来确认哪些设置被还原了
+        $script:check = $true; $script:match = 0; $script:diffN = 0
+        try {
+            foreach ($n in @($menu.Keys | Where-Object { $_ -ne '10' })) {
+                Write-Host "`n== $n. $($menu[$n][0]) ==" -ForegroundColor Cyan
+                & $menu[$n][2]
+            }
+        } finally { $script:check = $false }
+        Write-Host ''
+        Write-Host "状态检查：已生效 $($script:match) 项，未生效 $($script:diffN) 项" -ForegroundColor Green
+        if ($script:diffN) { Write-Host '未生效的项重新执行对应序号即可（Windows 大版本更新后常见）。' -ForegroundColor Yellow }
+        Read-Host "`n按回车返回菜单" | Out-Null
+        continue
+    }
 
     if ($in -eq 'r') {
         if (-not $script:undo.Count) { Read-Host '没有可恢复的记录，按回车返回菜单' | Out-Null; continue }
