@@ -12,13 +12,13 @@ mihomo / Shadowrocket / sing-box 客户端配置。
 2. 添加「脚本操作」：
 
    ```
-   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳vmiss回落🏷ℹ️vmiss-🕳Oracle回落🏷ℹ️oracle_arm-(xhttp|vision)🕳nosla回落🏷ℹ️nosla-
+   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳vmiss回落🏷ℹ️vmiss-🕳Oracle回落🏷ℹ️oracle_arm-vision🕳nosla回落🏷ℹ️nosla-
    ```
 
 3. 在其后再加本地脚本 `client/sing-box-reject-empty.js`，使空回落组拒绝连接而非直连。
 4. 客户端添加远程配置：`https://<Sub-Store 域名>:<端口>/<后端路径>/api/file/sing-box`。
 
-与 mihomo 版的差别：不支持 XHTTP 节点；回落组用大 `tolerance` 的 `urltest` 模拟，节点恢复后不自动切回；出现 `COMPATIBLE` 说明节点名或模板参数不对；`IP-ASN` 规则转换时跳过。
+与 mihomo 版的差别：回落组用大 `tolerance` 的 `urltest` 模拟，节点恢复后不自动切回；出现 `COMPATIBLE` 说明节点名或模板参数不对；`IP-ASN` 规则转换时跳过。
 
 ## 广告拦截
 

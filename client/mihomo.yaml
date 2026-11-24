@@ -78,7 +78,7 @@ proxy-providers:
 # ---------------- 策略组 ----------------
 # 回落组都设了 empty-fallback: REJECT：节点名没匹配上时直接断开，不会悄悄变成直连
 # 回落顺序 = 节点在 Sub-Store 里的排列顺序
-#   东京：xhttp → vision
+#   东京：vision
 #   洛杉矶：reality → hysteria2 → cdn-ws
 # 单个节点只出现在各自的回落组里；其他组只引用回落组，避免重复
 # 美国走哪台只在 🇺🇸 美国节点 里选，🚀 手动选择 只在 美国 / 日本 之间选，关联服务始终同一出口
@@ -100,11 +100,11 @@ proxy-groups:
     url: https://www.gstatic.com/generate_204
     interval: 180
 
-  # 东京 Oracle：XHTTP 优先，不通切 Vision
+  # 东京 Oracle：只有 Vision 一条
   - name: 🇯🇵 Oracle回落
     type: fallback
     use: [substore]
-    filter: "(?i)oracle_arm-(xhttp|vision)"
+    filter: "(?i)oracle_arm-vision"
     empty-fallback: REJECT
     url: https://www.gstatic.com/generate_204
     interval: 180
