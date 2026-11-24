@@ -51,7 +51,7 @@
 #    -r, --region   节点名前的国旗：两位国家代码，如 us（🇺🇸）、jp（🇯🇵）；默认按本机 IP 自动识别，none 不加
 #        --reset    重新生成 UUID / 密钥 / 密码（默认沿用上次的，客户端不用改）
 #        --all      （uninstall）选中全部代理组件；nginx / acme.sh / Caddy / cloudflared 需单独选
-#    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理
+#    -y, --yes      （uninstall）不再确认；（部署时）不询问，直接卸载检测到的其他代理（非交互运行不加 -y 则一个都不卸载）
 #    Xray 默认安装最新版；环境变量 XRAY_VERSION=v26.x.x 可固定成某个版本（如 v26.7.28）
 # =============================================================================
 set -Eeuo pipefail
@@ -86,7 +86,7 @@ HIDE=0                     # 1 = 启用 CDN 源站隐藏（probe_stream 决定�
 CF_V4="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22"
 WS_PORT=10001              # CDN WS 入站，只监听 127.0.0.1
 
-red(){ printf '\033[31m%s\033[0m\n' "$*"; }
+red(){ printf '\033[31m%s\033[0m\n' "$*" >&2; }
 grn(){ printf '\033[32m%s\033[0m\n' "$*"; }
 ylw(){ printf '\033[33m%s\033[0m\n' "$*"; }
 die(){ red "$*"; exit 1; }
@@ -399,7 +399,7 @@ guess_deploy(){
   # 名字前面的国旗（两个区域指示符，各 4 字节 F0 9F 87 xx）还原成国家代码；没有国旗就是 none
   local hex; hex=$(printf '%s' "${name%% *}" | od -An -tx1 | tr -d ' \n')
   if [[ $name == *" "* && $hex =~ ^f09f87([0-9a-f]{2})f09f87([0-9a-f]{2})$ ]]; then
-    printf -v D_REGION "\\x%02x\\x%02x" $(( 0x${BASH_REMATCH[1]} - 0xA6 + 97 )) $(( 0x${BASH_REMATCH[2]} - 0xA6 + 97 ))
+    printf -v D_REGION '\\x%02x\\x%02x' $(( 0x${BASH_REMATCH[1]} - 0xA6 + 97 )) $(( 0x${BASH_REMATCH[2]} - 0xA6 + 97 ))
     printf -v D_REGION "$D_REGION"
     name=${name#* }
   else D_REGION=none
@@ -414,7 +414,16 @@ guess_deploy(){
   fi
   grep -q -- '-cdn-\(ws\|xhttp\)", type' "$INFO" && D_PROTO+=,cdn-ws
   # 证书上次是用 80 端口验证的（--http01）
-  if (( ! D_NODOMAIN )) && grep -qs "^Le_Webroot='/" /root/.acme.sh/*/*.conf; then D_HTTP01=1; fi
+  #   只看本脚本自己的证书（state.env 里的 SAVED_CERTS），机器上别的证书怎么申请的不管
+  if (( ! D_NODOMAIN )); then
+    local c certs
+    certs=$(bash -c 'source "$1" 2>/dev/null; echo "${SAVED_CERTS:-${SAVED_DOMAIN:-}}"' _ "$STATE")
+    set -f
+    for c in $certs; do
+      grep -qs "^Le_Webroot='/" "/root/.acme.sh/${c}_ecc/${c}.conf" "/root/.acme.sh/${c}/${c}.conf" && D_HTTP01=1
+    done
+    set +f
+  fi
   return 0
 }
 
@@ -430,13 +439,20 @@ load_deploy(){
   elif [[ -s $STATE && -s $INFO ]]; then guess_deploy || return 1
   else return 1
   fi
-  if [[ -z $DOMAIN && $NODOMAIN -eq 0 ]]; then
-    DOMAIN=$D_DOMAIN NODOMAIN=$D_NODOMAIN
+  # 命令行没给域名，或给的和上次是同一个（同为无域名也算）：沿用上次的 CDN、借用网站、协议
+  local same=0
+  if [[ -z $DOMAIN && $NODOMAIN -eq 0 ]]; then DOMAIN=$D_DOMAIN NODOMAIN=$D_NODOMAIN; same=1
+  elif (( NODOMAIN )); then (( D_NODOMAIN )) && same=1
+  elif (( ! D_NODOMAIN )) && [[ ${DOMAIN,,} == "${D_DOMAIN,,}" ]]; then same=1
+  fi
+  if (( same )); then
     [[ -n $CDN ]] || CDN=$D_CDN
     [[ -n $RSNI ]] || RSNI=$D_RSNI
     if [[ -z $PROTO ]]; then
       PROTO=$D_PROTO
       if (( NO_HY2 )); then PROTO=${PROTO//,hy2/}; NO_HY2=0; fi
+      # 这次用 -c 加上了 CDN，上次的协议里没有：补上 cdn-ws
+      if [[ -n $CDN && ",$PROTO," != *",cdn-ws,"* && ",$PROTO," != *",cdn-xhttp,"* ]]; then PROTO+=",cdn-ws"; fi
     fi
   fi
   [[ -n $RPORT ]] || RPORT=$D_RPORT
@@ -554,8 +570,8 @@ validate(){
   for p in "$RPORT" "$HPORT"; do
     [[ $p =~ ^[0-9]+$ ]] && (( p >= 1 && p <= 65535 )) || die "端口不对：$p"
   done
-  [[ $RPORT != 80 && $RPORT != "$TARGET_PORT" && $RPORT != "$HTTPS_PORT" && $RPORT != "$REJECT_PORT" ]] \
-    || die "Reality 端口不能用 80 / $TARGET_PORT-$REJECT_PORT"
+  [[ $RPORT != 80 && $RPORT != "$WS_PORT" && $RPORT != "$TARGET_PORT" && $RPORT != "$HTTPS_PORT" && $RPORT != "$REJECT_PORT" ]] \
+    || die "Reality 端口不能用 80 / $WS_PORT / $TARGET_PORT-$REJECT_PORT（脚本内部要用）"
   [[ $HOP == off ]] && HOP=""
   if [[ -n $HOP ]]; then
     [[ $HOP =~ ^([0-9]+)-([0-9]+)$ ]] && (( BASH_REMATCH[1] < BASH_REMATCH[2] && BASH_REMATCH[2] <= 65535 )) \
@@ -629,13 +645,14 @@ install_deps(){
 
 cf_api(){ curl -sS --max-time 20 -H "Authorization: Bearer $CF_TOKEN" "https://api.cloudflare.com/client/v4/$1"; }
 
-# cf_zone 域名 → 输出 "zone_id zone名"
+# cf_zone 域名 → 输出 "zone_id zone名"；找不到区域返回 1，API 出错返回 2
 cf_zone(){
   local n=$1 r id
   while [[ $n == *.* ]]; do
-    r=$(cf_api "zones?name=$n") || die "连不上 Cloudflare API"
+    # 在 $(...) 里调用，die 只会退出子 shell：报错打到 stderr，返回 2 让调用方直接退出
+    r=$(cf_api "zones?name=$n") || { red "连不上 Cloudflare API"; return 2; }
     jq -e '.success' >/dev/null 2>&1 <<<"$r" \
-      || die "Cloudflare API 报错：$(jq -r '.errors[0].message // "未知错误"' <<<"$r" 2>/dev/null)（检查 Token 是否有 区域:读取 + DNS:编辑 权限）"
+      || { red "Cloudflare API 报错：$(jq -r '.errors[0].message // "未知错误"' <<<"$r" 2>/dev/null)（检查 Token 是否有效，是否有 区域:读取 + DNS:编辑 权限）"; return 2; }
     id=$(jq -r '.result[0].id // empty' <<<"$r")
     [[ -n $id ]] && { echo "$id $n"; return 0; }
     n=${n#*.}
@@ -672,11 +689,11 @@ check_dns(){
     return 0
   fi
   if (( ! HTTP01 )); then
-    local z
-    z=$(cf_zone "$DOMAIN") || die "Token 看不到 $DOMAIN 所在的域名（区域），检查 Token 的区域资源范围"
+    local z rc
+    z=$(cf_zone "$DOMAIN") || { rc=$?; (( rc == 2 )) && exit 1; die "Token 看不到 $DOMAIN 所在的域名（区域），检查 Token 的区域资源范围"; }
     ZONE_MAIN=${z#* }; cf_check "$DOMAIN" "${z%% *}" gray
     if [[ -n $CDN ]]; then
-      z=$(cf_zone "$CDN") || die "Token 看不到 $CDN 所在的域名（区域）"
+      z=$(cf_zone "$CDN") || { rc=$?; (( rc == 2 )) && exit 1; die "Token 看不到 $CDN 所在的域名（区域），检查 Token 的区域资源范围"; }
       ZONE_CDN=${z#* }; cf_check "$CDN" "${z%% *}" orange
     fi
     grn "  本机 $IP，Cloudflare DNS 记录检查通过"
@@ -793,11 +810,12 @@ select_target(){
 }
 
 check_ports(){
-  local busy
+  local busy ours='"(nginx|xray)"'
   local p80=":80$" ptg=":($TARGET_PORT|$HTTPS_PORT|$REJECT_PORT)$"
-  (( NODOMAIN )) && p80='^$' ptg='^$'          # 无域名模式不用 nginx，只看 Reality 端口
+  # 无域名模式不用 nginx，只看 Reality 端口；这时 nginx 占着它也算冲突
+  (( NODOMAIN )) && p80='^$' ptg='^$' ours='"xray"'
   busy=$(ss -tlnpH 2>/dev/null | awk -v a="$p80" -v b=":$RPORT$" -v c="$ptg" '$4~a||$4~b||$4~c' \
-         | grep -vE '"(nginx|xray)"' || true)
+         | grep -vE "$ours" || true)
   if (( ! NO_HY2 )); then
     busy+=$(ss -ulnpH 2>/dev/null | awk -v a=":$HPORT$" '$4~a' | grep -v '"hysteria"' || true)
   fi
@@ -892,14 +910,14 @@ acme_val(){
 
 fix_conflicts(){
   grn "[检查] 旧配置冲突"
-  local backup found=0 f
+  local backup found=0 nginx_off=0 f
   backup=$WORKDIR/backup-$(date +%Y%m%d-%H%M%S)
 
   # 1) nginx 站点
   while read -r f; do
     [[ -n $f ]] || continue
     [[ $f == /etc/nginx/nginx.conf ]] && die "/etc/nginx/nginx.conf 里有 server 监听端口 $RPORT / $TARGET_PORT-$REJECT_PORT，请手动删掉那段后重跑"
-    mkdir -p "$backup"; found=1
+    mkdir -p "$backup"; found=1 nginx_off=1
     if [[ -L $f ]]; then cp -L "$f" "$backup/$(basename "$f")"; rm -f "$f"
     else mv "$f" "$backup/"; fi
     ylw "  停用 nginx 站点 $f（它占用了 Xray / Hysteria2 要用的端口）"
@@ -931,6 +949,11 @@ fix_conflicts(){
   done
 
   if (( found )); then ylw "  已备份到 $backup"; else grn "  没有发现冲突"; fi
+  # 站点文件移走了，nginx 进程还占着端口：重载让它放开（无域名模式后面不会再重启 nginx）
+  if (( nginx_off )) && systemctl is-active --quiet nginx 2>/dev/null; then
+    if nginx -t -q 2>/dev/null; then systemctl reload nginx
+    else ylw "  nginx 配置测试没通过，没有重载；端口如果仍被 nginx 占用，下一步会提示"; fi
+  fi
 }
 
 # ------------------------------------------------------------ nginx 站点 ----
@@ -1304,7 +1327,14 @@ EOF
   CERT_CDN="" ; CDN_CERT_DIR=$MAIN_DIR HY_CERT_DIR=$MAIN_DIR
   if [[ -n $CDN ]]; then
     read -ra names <<<"$(cert_names "$CDN" "${ZONE_CDN:-}")"
-    if [[ ${names[0]} == "$CERT_MAIN" ]]; then
+    # 主证书的名字（含通配符）已经覆盖 CDN 域名：不再单独申请
+    local covered=0 n
+    for n in $(cert_names "$DOMAIN" "${ZONE_MAIN:-}"); do
+      n=${n,,}
+      # *.example.com 只覆盖一级子域名：cdn.example.com 算，a.cdn.example.com 不算
+      [[ $n == "${CDN,,}" || ( $n == "*."* && ${CDN,,} == *.* && ${CDN#*.} == "${n#\*.}" ) ]] && covered=1
+    done
+    if (( covered )); then
       ylw "  CDN 域名由同一张证书覆盖"
     else
       CERT_CDN=${names[0]}; CDN_CERT_DIR=$CDN_DIR
@@ -1339,13 +1369,16 @@ install_xray(){
   local want=${XRAY_VERSION:-$XRAY_DEFAULT_VERSION}
   [[ $want == latest || $want == v* ]] || want=v$want          # 允许写 26.9.9
   grn "[4/9] 安装 Xray $( [[ $want == latest ]] && echo "（最新版）" || echo "$want")"
-  local url=https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+  local url=https://github.com/XTLS/Xray-install/raw/main/install-release.sh inst
+  inst=$(mktemp)
+  curl -fsSL --retry 2 -o "$inst" "$url" && [[ -s $inst ]] || { rm -f "$inst"; die "下载 Xray 安装脚本失败（GitHub 连不上？）"; }
   if [[ $want == latest ]]; then
-    bash -c "$(curl -fsSL $url)" @ install >/dev/null || die "Xray 最新版安装失败（GitHub 连不上？）"
+    bash "$inst" install >/dev/null || { rm -f "$inst"; die "Xray 最新版安装失败（GitHub 连不上？）"; }
   else
-    bash -c "$(curl -fsSL $url)" @ install --version "$want" >/dev/null \
-      || die "Xray $want 安装失败（版本号是否存在？见 https://github.com/XTLS/Xray-core/releases）"
+    bash "$inst" install --version "$want" >/dev/null \
+      || { rm -f "$inst"; die "Xray $want 安装失败（版本号是否存在？见 https://github.com/XTLS/Xray-core/releases）"; }
   fi
+  rm -f "$inst"
   local v; v=$(/usr/local/bin/xray version 2>&1) || die "Xray 安装失败：$v"
   echo "  ${v%%$'\n'*}"
   if [[ $want != latest && ${v%%$'\n'*} != "Xray ${want#v} "* ]]; then
@@ -1426,7 +1459,11 @@ install_hy2(){
     return 0
   fi
   grn "[6/9] 安装 Hysteria2"
-  bash <(curl -fsSL https://get.hy2.sh/) >/dev/null
+  local inst; inst=$(mktemp)
+  curl -fsSL --retry 2 -o "$inst" https://get.hy2.sh/ && [[ -s $inst ]] || { rm -f "$inst"; die "下载 Hysteria2 安装脚本失败（get.hy2.sh 连不上？）"; }
+  bash "$inst" >/dev/null || { rm -f "$inst"; die "Hysteria2 安装失败"; }
+  rm -f "$inst"
+  command -v hysteria >/dev/null || [[ -x /usr/local/bin/hysteria ]] || die "Hysteria2 安装失败：找不到 hysteria 程序"
   id hysteria &>/dev/null || useradd -r -s /usr/sbin/nologin hysteria
   mkdir -p /etc/hysteria
   install -m 640 -o root -g hysteria "$HY_CERT_DIR/fullchain.crt" /etc/hysteria/cert.crt
@@ -1495,7 +1532,8 @@ for ipt in iptables ip6tables; do
   # 端口跳跃：把一段 UDP 端口转到 Hysteria2 实际端口
   $ipt -t nat -N HY2_HOP 2>/dev/null || $ipt -t nat -F HY2_HOP 2>/dev/null || continue
   $ipt -t nat -C PREROUTING -p udp -j HY2_HOP 2>/dev/null || $ipt -t nat -A PREROUTING -p udp -j HY2_HOP
-  [ -n "$HOP" ] && $ipt -t nat -A HY2_HOP -p udp --dport $HOP -j REDIRECT --to-ports $HOP_TO
+  # 只转目的地是本机的包：Docker / WireGuard 等经本机转发出去的 UDP 不受影响
+  [ -n "$HOP" ] && $ipt -t nat -A HY2_HOP -p udp -m addrtype --dst-type LOCAL --dport $HOP -j REDIRECT --to-ports $HOP_TO
 done
 exit 0
 EOF
@@ -1653,7 +1691,11 @@ EXTRA_COMPONENTS=(
 "Caddy（常做 NaiveProxy / Trojan 前置，也可能是网站）|caddy.service|caddy|/usr/bin/caddy /usr/local/bin/caddy /etc/caddy"
 "cloudflared / Argo 隧道|cloudflared.service argo.service|cloudflared|/usr/local/bin/cloudflared /usr/bin/cloudflared /etc/cloudflared /etc/argox /etc/argo"
 )
+# 容器名或镜像名（去掉仓库前缀）要以这些开头，后面紧跟 - _ . : @ 数字或结束；不做子串匹配，免得 redis-ui、aws-xray-daemon 被误认
 DOCKER_RE='xray|v2ray|v2fly|sing-?box|hysteria|tuic|trojan|shadowsocks|ss-?rust|x-ui|3x-ui|s-ui|h-ui|naive|juicity|gost|brook|mihomo|clash'
+
+# 其他脚本的端口跳跃：PREROUTING 里把一段 UDP 端口（--dport 起:止 / --dports）转走的规则。单端口转发（如游戏服务器的 DNAT）不算
+HOP_RULE_RE='^-A PREROUTING .*-p udp.*--dports? [0-9]+:[0-9]+.*-j (REDIRECT|DNAT)'
 
 C_TYPE=() C_NAME=() C_DATA=() C_DESC=() C_INALL=()
 add_comp(){ C_TYPE+=("$1"); C_NAME+=("$2"); C_DATA+=("$3"); C_DESC+=("$4"); C_INALL+=("$5"); }
@@ -1696,14 +1738,16 @@ detect_all(){
     while read -r line; do
       [[ -n $line ]] || continue
       add_comp docker "Docker 容器 ${line#* }" "${line%% *}" "" 1
-    done < <(docker ps -a --format '{{.ID}} {{.Names}} ({{.Image}})' 2>/dev/null | grep -iE "$DOCKER_RE" || true)
+    done < <(docker ps -a --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
+             | awk -v re="^($DOCKER_RE)([-_.:@0-9]|\$)" '{ img=$3; sub(/.*\//, "", img)
+                 if (tolower($2) ~ re || tolower(img) ~ re) print $1, $2, "(" $3 ")" }' || true)
   fi
   # 其他脚本留下的 UDP 端口跳跃 NAT 规则（本脚本的 HY2_HOP 归入"本脚本的附加配置"）
   local ipt n
   for ipt in iptables ip6tables; do
     command -v $ipt >/dev/null 2>&1 || continue
-    n=$($ipt -t nat -S PREROUTING 2>/dev/null | grep -E '^-A PREROUTING .*-p udp.*-j (REDIRECT|DNAT)' | grep -vc HY2_HOP || true)
-    (( n > 0 )) && add_comp nat "$ipt UDP 端口转发规则（多为其他脚本的端口跳跃）" "$ipt" "$n 条" 1
+    n=$($ipt -t nat -S PREROUTING 2>/dev/null | grep -E "$HOP_RULE_RE" | grep -vc HY2_HOP || true)
+    (( n > 0 )) && add_comp nat "$ipt UDP 端口跳跃规则（其他脚本留下的）" "$ipt" "$n 条" 1
   done
   dpkg -s nginx >/dev/null 2>&1 && add_comp pkg "nginx 软件包" "nginx nginx-common nginx-core nginx-full nginx-light" "如果本机还有其他网站不要选" 0
   [[ -d /root/.acme.sh ]] && add_comp acme "acme.sh 及其全部证书" "" "/root/.acme.sh" 0
@@ -1784,12 +1828,12 @@ remove_self(){
 remove_nat(){
   local ipt=$1 line
   local -a args
-  ylw "删除 $ipt UDP 端口转发规则"
+  ylw "删除 $ipt UDP 端口跳跃规则"
   while read -r line; do
     [[ -n $line ]] || continue
     read -ra args <<<"${line#-A PREROUTING }"
     $ipt -t nat -D PREROUTING "${args[@]}" 2>/dev/null || red "  删除失败：$line"
-  done < <($ipt -t nat -S PREROUTING 2>/dev/null | grep -E '^-A PREROUTING .*-p udp.*-j (REDIRECT|DNAT)' | grep -v HY2_HOP || true)
+  done < <($ipt -t nat -S PREROUTING 2>/dev/null | grep -E "$HOP_RULE_RE" | grep -v HY2_HOP || true)
   ylw "  如果规则是开机脚本加的（rc.local、/etc/iptables/rules.v*、nftables.conf），重启后可能恢复，需要一并清理"
 }
 
@@ -1875,9 +1919,11 @@ preinstall_cleanup(){
     [[ -n ${C_DESC[$i]} ]] && printf '        %s\n' "${C_DESC[$i]}"
   done
   local ans n
-  if (( YES )) || [[ ! -t 0 ]]; then
+  if (( YES )); then
     ans=a
-    (( YES )) || { ylw "  非交互环境：只卸载不带 ⚠ 的组件（加 -y 可跳过这个提示）"; }
+  elif [[ ! -t 0 ]]; then
+    ans=n
+    ylw "  非交互环境：不卸载任何组件（加 -y 卸载上面不带 ⚠ 的组件）"
   else
     read -rp "  卸载哪些？编号空格分隔，a=全部不带 ⚠ 的（默认），n=都不卸载: " ans || true
     ans=${ans:-a}
@@ -1941,6 +1987,7 @@ main(){
   parse_args "$@"
   (( $# == 0 )) && [[ -t 0 ]] && main_menu
   if [[ $CMD == info ]]; then
+    (( EUID == 0 )) || die "请用 root 运行：sudo node-setup info"
     [[ -f $INFO ]] && cat "$INFO" || die "还没有部署过（找不到 $INFO）"
     exit 0
   fi
