@@ -20,11 +20,20 @@ exit /b
 # ============================================================
 #  Windows 优化工具（交互式）：性能 + 后台内存 + 隐私
 #  双击运行，自动请求管理员权限。
-#  输入序号选择要执行的优化项（可多选，如 1 4 6 或 1,4,6；a = 1-9；r = 恢复；q = 退出）。
+#  输入序号选择要执行的优化项（可多选，如 1 4 6 或 1,4,6；a = 1-9；c = 状态检查；r = 恢复；q = 退出）。
 #  可重复运行。每项改动前的原值记录在 %LOCALAPPDATA%\WindowsOptimize\undo.json，
 #  菜单 r 可按记录逐项恢复；首次执行时另建一个系统还原点（需开启系统保护）。
 #  注意：代码里的字符串不要用中文弯引号，PowerShell 会把它们当成引号。
 # ============================================================
+
+# ===================== 本机配置（换电脑时只改这里） =====================
+$BgAllowApps     = @('Claude_pzs8sxrjxfjjc')                           # 允许后台运行的商店/MSIX 应用，填包系列名（序号 1）
+$AudioStartup    = @('RTHDVCPL', 'RtHDVBg_WAVES_SKYLAKE', 'WavesSvc')  # 要关闭的音频托盘开机启动项名称（序号 2）
+$AudioTasks      = @('RtHDVBg_PushButton')                             # 要禁用的音频自启计划任务，位于任务计划程序根目录（序号 8）
+$TempKeep        = @('claude')                                         # 清理 Temp 时保留的顶层文件夹（序号 9）
+$TempAgeDays     = 1                                                   # 只清理多少天以前的临时文件（序号 9）
+$UsersDirDefault = 'D:\Users'                                          # 移动用户文件夹的默认目标（序号 10）
+# ======================================================================
 
 $bk = Join-Path $env:LOCALAPPDATA 'WindowsOptimize'
 $undoFile = Join-Path $bk 'undo.json'
@@ -210,7 +219,7 @@ function Get-Overlay {
 function Opt1 {
     # 后台应用：用户级总开关已从新版 Windows 11 设置中移除，可能不再生效，因此再用策略强制禁止 + 白名单放行。
     # 这两项只管商店/MSIX 应用，微信、QQ 等普通桌面程序不受影响。
-    $bgAllow = @('Claude_pzs8sxrjxfjjc')   # 需要后台运行的应用（包系列名，可自行添加）
+    $bgAllow = @($BgAllowApps)             # 在开头「本机配置」里添加
     $bgSystem = @('Microsoft.Windows.ShellExperienceHost_cw5n1h2txyewy', 'Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy',
                   'Microsoft.Windows.Search_cw5n1h2txyewy', 'MicrosoftWindows.Client.CBS_cw5n1h2txyewy',
                   'MicrosoftWindows.Client.Core_cw5n1h2txyewy', 'Microsoft.SecHealthUI_8wekyb3d8bbwe')   # 开始菜单/搜索/通知/安全中心
@@ -275,7 +284,7 @@ function Opt2 {
         @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',             'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'),
         @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32'),
         @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',             'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'))
-    foreach ($n in 'RTHDVCPL', 'RtHDVBg_WAVES_SKYLAKE', 'WavesSvc') {
+    foreach ($n in $AudioStartup) {
         foreach ($r in $runs) {
             $rk = Get-Item -LiteralPath $r[0] -ErrorAction SilentlyContinue
             if (-not ($rk -and ($rk.GetValueNames() -contains $n))) { continue }
@@ -290,6 +299,20 @@ function Opt2 {
 
     # 关闭快速启动：每次开机完整初始化内核和驱动，双系统下 NTFS 分区也不会被锁；代价是开机稍慢
     S 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' HiberbootEnabled 0
+
+    # 台式机关闭休眠：删除 hiberfil.sys（约为内存的 40%）。快速启动已关，休眠文件只剩手动休眠一个用途；笔记本保留
+    if ((Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).PCSystemType -eq 2) {
+        Write-Host '  笔记本，保留休眠功能' -ForegroundColor DarkGray; return
+    }
+    $hib = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -ErrorAction SilentlyContinue).HibernateEnabled
+    if ($script:check) { Chk '休眠' $(if ($hib -eq 0) { '已关闭' } else { '已开启' }) '已关闭'; return }
+    $hf = Get-Item -LiteralPath "$env:SystemDrive\hiberfil.sys" -Force -ErrorAction SilentlyContinue
+    Add-Undo 'hib' ([pscustomobject]@{ t = 'hib'; value = [int]([bool]$hf -or $hib -eq 1) })
+    powercfg /hibernate off 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $script:ok++
+        if ($hf) { Write-Host ('  已关闭休眠，释放 {0:N1} GB' -f ($hf.Length / 1GB)) }
+    } else { $script:fail += '关闭休眠: powercfg /hibernate off 失败' }
 }
 
 # ------------------------------------------------------------
@@ -400,7 +423,7 @@ function Opt8 {
     DisTask '\Microsoft\Windows\Windows Error Reporting\' 'QueueReporting'
     DisTask '\Microsoft\Windows\Maps\' 'MapsUpdateTask'
     DisTask '\Microsoft\Windows\Maps\' 'MapsToastTask'
-    DisTask '\' 'RtHDVBg_PushButton'                                   # Realtek 音频后台程序登录自启
+    foreach ($t in $AudioTasks) { DisTask '\' $t }                     # 音频后台程序登录自启（本机配置）
     DisTask $null 'SoftLandingCreativeManagementTask'                  # 系统推广内容（位于 SoftLanding\<用户SID>\ 下）
     DisTask '\Microsoft\Office\' 'Office Performance Monitor'          # Office 遥测
     DisTask '\Microsoft\Office\' 'OfficeTelemetryAgentLogOn2016'
@@ -411,7 +434,7 @@ function Opt8 {
 # ------------------------------------------------------------
 function Clear-Dir($dir, $cutoff, $top = $false) {
     foreach ($it in @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)) {
-        if ($top -and $it.Name -eq 'claude') { continue }
+        if ($top -and ($TempKeep -contains $it.Name)) { continue }
         $t = $it.LastWriteTime; if ($it.CreationTime -gt $t) { $t = $it.CreationTime }
         try {
             if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) {
@@ -432,15 +455,25 @@ function Clear-Dir($dir, $cutoff, $top = $false) {
     }
 }
 function Opt9 {
-    # 只删 24 小时以前的内容，避免误删正在进行的安装或待重启更新的临时文件
+    # 只删 N 天以前的内容（本机配置 $TempAgeDays），避免误删正在进行的安装或待重启更新的临时文件
     $script:freed = 0
-    $cutoff = (Get-Date).AddDays(-1)
+    $cutoff = (Get-Date).AddDays(-$TempAgeDays)
     foreach ($d in (@($env:TEMP, "$env:windir\Temp") | Select-Object -Unique)) {
         if (Test-Path -LiteralPath $d) { Clear-Dir $d $cutoff $true }
     }
     if ($script:check) { Write-Host ('  可清理约 {0:N0} MB（清理类，不计入）' -f ($script:freed / 1MB)) -ForegroundColor DarkGray; return }
-    Write-Host ('  释放 {0:N0} MB（24 小时内的文件和占用中的文件已跳过）' -f ($script:freed / 1MB))
+    Write-Host ('  释放 {0:N0} MB（{1} 天内的文件和占用中的文件已跳过）' -f ($script:freed / 1MB), $TempAgeDays)
     $script:ok++
+
+    # 系统组件存储（WinSxS）：清掉被新版本替换的旧组件。不加 /ResetBase，已安装的更新仍可卸载
+    if ((Read-Host '  同时清理系统组件存储 (WinSxS)？需要几分钟 (y/N)').Trim().ToLower() -ne 'y') { return }
+    $free0 = (New-Object IO.DriveInfo -ArgumentList $env:SystemDrive).AvailableFreeSpace
+    Dism.exe /Online /Cleanup-Image /StartComponentCleanup
+    if ($LASTEXITCODE -eq 0) {
+        $script:ok++
+        $gain = (New-Object IO.DriveInfo -ArgumentList $env:SystemDrive).AvailableFreeSpace - $free0
+        Write-Host ('  组件清理完成，系统盘可用空间增加 {0:N0} MB' -f ([math]::Max(0, $gain) / 1MB))
+    } else { $script:fail += "组件清理: DISM 返回 $LASTEXITCODE" }
 }
 
 # ------------------------------------------------------------
@@ -462,8 +495,8 @@ public static class KnownFolder {
 }
 '@
     }
-    $base = (Read-Host '  目标目录（直接回车 = D:\Users）').Trim().Trim('"')
-    if (-not $base) { $base = 'D:\Users' }
+    $base = (Read-Host ('  目标目录（直接回车 = ' + $UsersDirDefault + '）')).Trim().Trim('"')
+    if (-not $base) { $base = $UsersDirDefault }
     $base = $base.TrimEnd('\')
     if ($base -notmatch '^[A-Za-z]:(\\|$)') { $script:fail += "移动用户文件夹: 请输入带盘符的完整路径 ($base)"; return }
     $drv = New-Object IO.DriveInfo -ArgumentList ($base.Substring(0, 1))
@@ -567,6 +600,7 @@ function Restore-All {
                     }
                 }
                 'task'  { if ($e.enabled) { Enable-ScheduledTask -TaskPath $e.path -TaskName $e.name -ErrorAction Stop | Out-Null } }
+                'hib'   { if ([int]$e.value -eq 1) { powercfg /hibernate on 2>$null; if ($LASTEXITCODE -ne 0) { throw 'powercfg /hibernate on 失败' } } }
                 'power' { powercfg /overlaysetactive $e.value 2>$null; if ($LASTEXITCODE -ne 0) { throw 'powercfg 失败' } }
                 'appx'  { $apps += $e.name }
             }
@@ -616,16 +650,16 @@ function Show-Result {
 # ------------------------------------------------------------
 # 菜单：序号 -> (名称, 说明, 函数)
 $menu = [ordered]@{
-    '1' = @('性能：后台应用、Edge、视觉效果、电源', '策略禁止商店应用后台运行（Claude 和系统组件除外）、关闭 Edge 后台常驻与启动加速、精简动画与透明效果、最佳性能电源模式（平衡计划且插电时）', ${function:Opt1})
-    '2' = @('服务、开机启动与快速启动',       '禁用遥测/地图/WAP 推送服务，关闭 Realtek/Waves 音频托盘自启，关闭快速启动；打印服务单独询问', ${function:Opt2})
+    '1' = @('性能：后台应用、Edge、视觉效果、电源', '策略禁止商店应用后台运行（白名单应用和系统组件除外）、关闭 Edge 后台常驻与启动加速、精简动画与透明效果、最佳性能电源模式（平衡计划且插电时）', ${function:Opt1})
+    '2' = @('服务、开机启动、快速启动与休眠', '禁用遥测/地图/WAP 推送服务，关闭音频托盘自启，关闭快速启动，台式机关闭休眠；打印服务单独询问', ${function:Opt2})
     '3' = @('卸载小组件 (Widgets)',           '结束并卸载 Windows 小组件，并用策略防止重新安装', ${function:Opt3})
     '4' = @('隐私：搜索',                     '关闭 Bing/云搜索/搜索要点/搜索历史', ${function:Opt4})
     '5' = @('隐私：遥测、诊断、活动历史',     '遥测降到版本允许的最低级别（家庭/专业版为「必需」）、关闭错误报告/CEIP/兼容性数据收集/活动历史/反馈提示', ${function:Opt5})
     '6' = @('隐私：广告、推荐与推广内容',     '关闭广告 ID、开始菜单推荐、锁屏/设置里的推广、预装应用推送', ${function:Opt6})
     '7' = @('隐私：输入、语音、Copilot、传递优化', '关闭输入/墨迹收集、在线语音、Recall，卸载 Copilot 应用，传递优化只用 HTTP', ${function:Opt7})
     '8' = @('禁用数据收集计划任务',           '禁用兼容性评估、CEIP、磁盘诊断、反馈、地图、Office 遥测、Xbox 存档同步等任务（会影响大版本更新前的兼容性检查）', ${function:Opt8})
-    '9' = @('清理临时文件',                   '清理用户与系统 Temp 中 24 小时以前的文件（占用中的文件、链接目标不受影响）', ${function:Opt9})
-    '10' = @('移动用户文件夹到其他盘',        '把桌面/下载/文档/图片/音乐/视频移到 D:\Users（可自定义；仅限 NTFS 固定磁盘，权限只给本人；不在 r 恢复范围内）', ${function:Opt10})
+    '9' = @('清理临时文件与系统组件',         ('清理用户与系统 Temp 中 {0} 天以前的文件（占用中的文件、链接目标不受影响）；可选清理 WinSxS 旧组件' -f $TempAgeDays), ${function:Opt9})
+    '10' = @('移动用户文件夹到其他盘',        ('把桌面/下载/文档/图片/音乐/视频移到 {0}（可自定义；仅限 NTFS 固定磁盘，权限只给本人；不在 r 恢复范围内）' -f $UsersDirDefault), ${function:Opt10})
 }
 
 function Show-Menu {
