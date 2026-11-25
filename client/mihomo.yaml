@@ -104,7 +104,7 @@ proxy-groups:
   - name: 🇯🇵 Oracle回落
     type: fallback
     use: [substore]
-    filter: "(?i)oracle_arm-"
+    filter: "(?i)oracle-"
     empty-fallback: REJECT
     url: https://www.gstatic.com/generate_204
     interval: 180
