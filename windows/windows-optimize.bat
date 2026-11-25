@@ -1,28 +1,23 @@
 <# :
 @echo off
+rem Launcher: elevate, then run the PowerShell part below in a hidden console; the UI is a WPF window
 set "F=%~f0"
-rem fltmc succeeds only when elevated and, unlike net session, does not depend on the Server service
-fltmc >nul 2>&1
-if errorlevel 1 (
-  if /i "%~1"=="--elevated" (
-    echo Failed to get administrator rights.
-    pause
-    exit /b 1
-  )
-  powershell.exe -NoProfile -Command "Start-Process -FilePath $env:F -ArgumentList '--elevated' -Verb RunAs" || pause
+if /i not "%~1"=="--elevated" (
+  powershell.exe -NoProfile -Command "Start-Process -FilePath $env:F -ArgumentList '--elevated' -Verb RunAs -WindowStyle Hidden" || pause
   exit /b
 )
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "iex ([IO.File]::ReadAllText($env:F,[Text.Encoding]::UTF8))"
-pause
+rem fltmc succeeds only when elevated and, unlike net session, does not depend on the Server service
+fltmc >nul 2>&1 || exit /b 1
+powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -Command "iex ([IO.File]::ReadAllText($env:F,[Text.Encoding]::UTF8))"
 exit /b
 #>
 
 # ============================================================
-#  Windows 优化工具（交互式）：性能 + 后台内存 + 隐私
-#  双击运行，自动请求管理员权限。
-#  输入序号选择要执行的优化项（可多选，如 1 4 6 或 1,4,6；a = 1-9；c = 状态检查；r = 恢复；q = 退出）。
+#  Windows 优化工具（图形界面）：性能 + 后台内存 + 隐私
+#  双击运行，自动请求管理员权限。勾选项目后点「执行所选」；「状态检查」只读不改；「恢复到优化前」按记录还原。
 #  可重复运行。每项改动前的原值记录在 %LOCALAPPDATA%\WindowsOptimize\undo.json，
-#  菜单 r 可按记录逐项恢复；首次执行时另建一个系统还原点（需开启系统保护）。
+#  首次执行时另建一个系统还原点（需开启系统保护）。
+#  结构：$Logic 是全部优化逻辑，在后台 runspace 里执行（界面不卡）；其后是 WPF 界面。
 #  注意：代码里的字符串不要用中文弯引号，PowerShell 会把它们当成引号。
 # ============================================================
 
@@ -34,7 +29,23 @@ $TempKeep        = @('claude')                                         # 清理 
 $TempAgeDays     = 1                                                   # 只清理多少天以前的临时文件（序号 9）
 $UsersDirDefault = 'D:\Users'                                          # 移动用户文件夹的默认目标（序号 10）
 # ======================================================================
+$ConfigNames = 'BgAllowApps', 'AudioStartup', 'AudioTasks', 'TempKeep', 'TempAgeDays', 'UsersDirDefault'
 
+# 隐藏宿主控制台窗口（外壳已用隐藏方式启动，这里兜底）
+try {
+    Add-Type -Namespace WinOpt -Name Con -ErrorAction Stop -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+'@
+    [void][WinOpt.Con]::ShowWindow([WinOpt.Con]::GetConsoleWindow(), 0)
+} catch {}
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+# ============================================================
+#  优化逻辑：界面线程和后台 runspace 各加载一份；真正的修改只在后台 runspace 里执行。
+#  输出统一走 Log（运行记录面板 + log.txt），界面消息走 Post（放进队列，由界面定时取出）。
+# ============================================================
+$Logic = {
 $bk = Join-Path $env:LOCALAPPDATA 'WindowsOptimize'
 $undoFile = Join-Path $bk 'undo.json'
 $script:ok = 0; $script:fail = @()
@@ -42,65 +53,40 @@ $script:undo = New-Object System.Collections.ArrayList
 $script:seen = @{}
 $script:check = $false   # 状态检查模式：S/Svc/DisTask/Remove-App 只比对不修改
 $script:match = 0; $script:diffN = 0
+$script:logOn = $false
+# 界面上的附加选项（执行前由界面设置）
+$Opt = @{ Spooler = $false; WinSxS = $false; UsersDir = $UsersDirDefault; MoveFiles = $true }
 
-# 控制台字体：优先用更纱黑体 Term（思源黑体 + Iosevka 的等宽合成，观感接近苹方，开源可商用），
-# 没装就退回新宋体。conhost 没有行距设置，行高 = 字号格高，靠字体自身的上下留白拉开行距：
-# 更纱的留白比新宋体大，所以格高给到 22，字面大小和原来 16 号新宋体相近，行距明显更松。
-# 只对传统控制台窗口(conhost)当场生效；Windows Terminal 会忽略，不影响使用。
-try {
-    Add-Type -ErrorAction Stop -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class ConFont {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct CFI {
-        public uint cbSize; public uint nFont; public short X; public short Y;
-        public uint Family; public uint Weight;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Face;
-    }
-    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GetStdHandle(int h);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetCurrentConsoleFontEx(IntPtr h, bool max, ref CFI f);
-    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetCurrentConsoleFontEx(IntPtr h, bool max, ref CFI f);
-    public static string Set(string face, short size) {
-        CFI f = new CFI();
-        f.cbSize = (uint)Marshal.SizeOf(typeof(CFI));
-        f.Y = size; f.Family = 54; f.Weight = 400; f.Face = face;
-        IntPtr h = GetStdHandle(-11);
-        if (!SetCurrentConsoleFontEx(h, false, ref f)) return null;
-        CFI g = new CFI();
-        g.cbSize = f.cbSize;
-        return GetCurrentConsoleFontEx(h, false, ref g) ? g.Face : null;
+function Post($m) { if ($Q) { $Q.Enqueue($m) } }
+function Log([string]$t, [string]$lv = 'info') {
+    # lv: info / dim / warn / err / ok / head
+    Post @{ k = 'log'; t = $t; lv = $lv }
+    if ($script:logOn) {
+        try { [IO.File]::AppendAllText((Join-Path $bk 'log.txt'), ('{0:HH:mm:ss}  {1}{2}' -f (Get-Date), $t, "`r`n"), [Text.Encoding]::UTF8) } catch {}
     }
 }
-'@
-    # 字体未安装时 SetCurrentConsoleFontEx 也会返回成功并悄悄换成别的字体，所以要读回实际字体名核对
-    foreach ($f in @(
-            @('Sarasa Term SC', 22, '*Sarasa*|*更纱*'),     # 格高 22；嫌大改 20，嫌挤改 24
-            @('Sarasa Mono SC', 22, '*Sarasa*|*更纱*'),
-            @('新宋体', 16, '*新宋体*|*NSimSun*'),
-            @('NSimSun', 16, '*新宋体*|*NSimSun*'),
-            @('MS Gothic', 16, '*Gothic*'))) {
-        $got = [ConFont]::Set($f[0], $f[1])
-        if ($got -and @($f[2] -split '\|' | Where-Object { $got -like $_ }).Count) { break }
-    }
-} catch {}
+function Start-Log {
+    New-Item -ItemType Directory -Force $bk | Out-Null
+    $script:logOn = $true
+    Log ('==== {0:yyyy-MM-dd HH:mm:ss} ====' -f (Get-Date)) 'dim'
+}
+function Stop-Log { $script:logOn = $false }
 
 # ------------------------------------------------------------
 # 提权后必须仍是桌面登录的那个账户：标准用户在 UAC 里输入另一个管理员账户时，
 # HKCU 设置、临时文件、用户文件夹都会作用到那个管理员账户上
 $me = [Security.Principal.WindowsIdentity]::GetCurrent()
-try {
-    $sess = (Get-Process -Id $PID).SessionId
-    $exp = Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$sess" -ErrorAction Stop | Select-Object -First 1
-    if ($exp) {
-        $owner = (Invoke-CimMethod -InputObject $exp -MethodName GetOwnerSid -ErrorAction Stop).Sid
-        if ($owner -and $owner -ne $me.User.Value) {
-            Write-Host ('当前以 ' + $me.Name + ' 身份运行，但桌面登录的是另一个账户，用户级设置会写错账户。') -ForegroundColor Red
-            Write-Host '请直接用管理员账户登录 Windows 后再运行本脚本。' -ForegroundColor Red
-            exit 1
+function Test-SameUser {
+    try {
+        $sess = (Get-Process -Id $PID).SessionId
+        $exp = Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$sess" -ErrorAction Stop | Select-Object -First 1
+        if ($exp) {
+            $owner = (Invoke-CimMethod -InputObject $exp -MethodName GetOwnerSid -ErrorAction Stop).Sid
+            if ($owner -and $owner -ne $me.User.Value) { return $false }
         }
-    }
-} catch {}
+    } catch {}
+    $true
+}
 
 # 系统版本：部分策略只在企业版/教育版生效
 $nt = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
@@ -113,13 +99,13 @@ if (-not $edName) { $edName = $edition }
 $osInfo = ('{0} {1} {2} (Build {3}.{4})' -f $(if ($build -ge 22000) { 'Windows 11' } else { 'Windows 10' }), $edName, $nt.DisplayVersion, $build, $nt.UBR)
 
 # ------------------------------------------------------------
-# 恢复记录：每个注册表值/服务/计划任务第一次被修改前记下原状态（以后再运行不覆盖），菜单 r 逆序还原
+# 恢复记录：每个注册表值/服务/计划任务第一次被修改前记下原状态（以后再运行不覆盖），「恢复到优化前」逆序还原
 function Load-Undo {
     if (-not (Test-Path -LiteralPath $undoFile)) { return }
     try {
         $j = [IO.File]::ReadAllText($undoFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
         foreach ($e in @($j)) { if ($e -and $e.id) { [void]$script:undo.Add($e); $script:seen[$e.id] = $true } }
-    } catch { Write-Host "  [警告] 恢复记录读取失败: $undoFile" -ForegroundColor Yellow; Start-Sleep 2 }
+    } catch { Log "[警告] 恢复记录读取失败: $undoFile" 'warn' }
 }
 function Save-Undo {
     New-Item -ItemType Directory -Force $bk | Out-Null
@@ -127,6 +113,7 @@ function Save-Undo {
     $json = ConvertTo-Json -InputObject @($script:undo.ToArray()) -Depth 5
     [IO.File]::WriteAllText($undoFile, $json, (New-Object Text.UTF8Encoding $false))
 }
+function Post-Undo { Post @{ k = 'undo'; n = $script:undo.Count } }
 function Add-Undo($id, $e) {
     if ($script:seen.ContainsKey($id)) { return }
     $e | Add-Member -NotePropertyName id -NotePropertyValue $id
@@ -170,7 +157,7 @@ function Fmt($v) {
 function Chk($label, $cur, $want) {
     $c = Fmt $cur; $w = Fmt $want
     if ($c -eq $w) { $script:match++ }
-    else { $script:diffN++; Write-Host "  [未生效] $label : 当前 $c，目标 $w" -ForegroundColor Yellow }
+    else { $script:diffN++; Log "[未生效] $label : 当前 $c，目标 $w" 'warn' }
 }
 function S($path, $name, $val, $type = 'DWord') {
     if ($script:check) {
@@ -190,7 +177,7 @@ function S($path, $name, $val, $type = 'DWord') {
     } catch { $script:fail += "$path\$name : $($_.Exception.Message)" }
 }
 function Svc($name) {
-    if (-not (Get-Service $name -ErrorAction SilentlyContinue)) { Write-Host "  服务 $name 不存在，跳过" -ForegroundColor DarkGray; return }
+    if (-not (Get-Service $name -ErrorAction SilentlyContinue)) { Log "服务 $name 不存在，跳过" 'dim'; return }
     if ($script:check) { Chk "服务 $name" ([string](Get-Service $name).StartType) 'Disabled'; return }
     Rec-Svc $name
     try {
@@ -204,7 +191,7 @@ function DisTask($path, $name) {
     $q = @{ TaskName = $name; ErrorAction = 'SilentlyContinue' }
     if ($path) { $q.TaskPath = $path }
     $tasks = @(Get-ScheduledTask @q)
-    if (-not $tasks.Count) { Write-Host "  任务 $path$name 不存在，跳过" -ForegroundColor DarkGray; return }
+    if (-not $tasks.Count) { Log "任务 $path$name 不存在，跳过" 'dim'; return }
     foreach ($tk in $tasks) {
         if ($script:check) { Chk "任务 $($tk.TaskPath)$($tk.TaskName)" ([string]$tk.State) 'Disabled'; continue }
         Add-Undo "task|$($tk.TaskPath)$($tk.TaskName)" ([pscustomobject]@{ t = 'task'; path = $tk.TaskPath; name = $tk.TaskName; enabled = ($tk.State -ne 'Disabled') })
@@ -215,7 +202,7 @@ function DisTask($path, $name) {
 function Remove-App($pkg, $label) {
     $ap = @(Get-AppxPackage $pkg)
     if ($script:check) { Chk $label $(if ($ap.Count) { '已安装' } else { '未安装' }) '未安装'; return }
-    if (-not $ap.Count) { Write-Host "  $label 未安装，跳过" -ForegroundColor DarkGray; return }
+    if (-not $ap.Count) { Log "$label 未安装，跳过" 'dim'; return }
     Add-Undo "appx|$pkg" ([pscustomobject]@{ t = 'appx'; name = $label })
     try { $ap | Remove-AppxPackage -ErrorAction Stop; $script:ok++ } catch { $script:fail += "卸载 $label : $($_.Exception.Message)" }
 }
@@ -267,19 +254,19 @@ function Opt1 {
     # 电源模式「最佳性能」：只在「平衡」电源计划下可用；笔记本用电池时跳过，免得把电池续航也牺牲掉
     if ($script:check) {
         $g = Get-Overlay
-        if ($g) { Chk '电源模式' $g 'ded574b5-45a0-4f42-8737-46345c09c238' } else { Write-Host '  电源模式: 无法读取当前值' -ForegroundColor DarkGray }
+        if ($g) { Chk '电源模式' $g 'ded574b5-45a0-4f42-8737-46345c09c238' } else { Log '电源模式: 无法读取当前值' 'dim' }
         return
     }
     $onBattery = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Where-Object { $_.BatteryStatus -in 1, 4, 5, 10, 11 }).Count -gt 0
     if ($onBattery) {
-        Write-Host '  正在使用电池，跳过电源模式（插上电源后再执行本项）' -ForegroundColor Yellow
+        Log '正在使用电池，跳过电源模式（插上电源后再执行本项）' 'warn'
     } else {
         if (-not $script:seen.ContainsKey('power')) {
             $g = Get-Overlay
             if (-not $g) { $g = '00000000-0000-0000-0000-000000000000' }   # 默认的「平衡」模式
             Add-Undo 'power' ([pscustomobject]@{ t = 'power'; value = [string]$g })
         }
-        powercfg /overlaysetactive ded574b5-45a0-4f42-8737-46345c09c238 2>$null   # 最佳性能
+        powercfg /overlaysetactive ded574b5-45a0-4f42-8737-46345c09c238 2>$null | Out-Null   # 最佳性能
         if ($LASTEXITCODE -eq 0) { $script:ok++ }
         else { $script:fail += '电源模式: 设置失败（只在「平衡」电源计划下可用，可在 控制面板\电源选项 里切回平衡）' }
     }
@@ -291,8 +278,8 @@ function Opt2 {
     Svc MapsBroker         # 离线地图
     Svc dmwappushservice   # WAP 推送（遥测相关；公司电脑如需 Intune/MDM 注册请跳过本项）
     # WerSvc 默认就是按需触发，禁用几乎不省资源；错误报告已在序号 5 用策略关闭
-    if ($script:check) { Write-Host ('  打印服务（可选项，不计入）: ' + (Get-Service Spooler -ErrorAction SilentlyContinue).StartType) -ForegroundColor DarkGray }
-    elseif ((Read-Host '  同时禁用打印服务？禁用后无法打印，也不能「打印到 PDF」(y/N)').Trim().ToLower() -eq 'y') { Svc Spooler }
+    if ($script:check) { Log ('打印服务（可选项，不计入）: ' + (Get-Service Spooler -ErrorAction SilentlyContinue).StartType) 'dim' }
+    elseif ($Opt.Spooler) { Svc Spooler }
 
     # 音频托盘程序自启：只处理确实存在的启动项，按它所在位置写对应的 StartupApproved 键
     # （可在任务管理器「启动应用」里恢复。Waves 在部分戴尔机型上负责音效/麦克风降噪，关闭后如有异常请恢复）
@@ -318,16 +305,16 @@ function Opt2 {
 
     # 台式机关闭休眠：删除 hiberfil.sys（约为内存的 40%）。快速启动已关，休眠文件只剩手动休眠一个用途；笔记本保留
     if ((Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).PCSystemType -eq 2) {
-        Write-Host '  笔记本，保留休眠功能' -ForegroundColor DarkGray; return
+        Log '笔记本，保留休眠功能' 'dim'; return
     }
     $hib = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -ErrorAction SilentlyContinue).HibernateEnabled
     if ($script:check) { Chk '休眠' $(if ($hib -eq 0) { '已关闭' } else { '已开启' }) '已关闭'; return }
     $hf = Get-Item -LiteralPath "$env:SystemDrive\hiberfil.sys" -Force -ErrorAction SilentlyContinue
     Add-Undo 'hib' ([pscustomobject]@{ t = 'hib'; value = [int]([bool]$hf -or $hib -eq 1) })
-    powercfg /hibernate off 2>$null
+    powercfg /hibernate off 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         $script:ok++
-        if ($hf) { Write-Host ('  已关闭休眠，释放 {0:N1} GB' -f ($hf.Length / 1GB)) }
+        if ($hf) { Log ('已关闭休眠，释放 {0:N1} GB' -f ($hf.Length / 1GB)) }
     } else { $script:fail += '关闭休眠: powercfg /hibernate off 失败' }
 }
 
@@ -354,7 +341,7 @@ function Opt4 {
 
 # ------------------------------------------------------------
 function Opt5 {
-    if (-not $isEnt) { Write-Host ('  提示：' + $edName + '的遥测最低只能到「必需」级别，AllowTelemetry=0 会按 1 执行') -ForegroundColor DarkGray }
+    if (-not $isEnt) { Log ('提示：' + $edName + '的遥测最低只能到「必需」级别，AllowTelemetry=0 会按 1 执行') 'dim' }
     S "$P\DataCollection" AllowTelemetry 0
     S 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection' AllowTelemetry 0
     S "$P\DataCollection" DoNotShowFeedbackNotifications 1
@@ -376,7 +363,7 @@ function Opt5 {
 
 # ------------------------------------------------------------
 function Opt6 {
-    if (-not $isEnt) { Write-Host '  提示：CloudContent / 聚焦类策略只在企业版、教育版生效，本机以用户设置（ContentDeliveryManager）为准' -ForegroundColor DarkGray }
+    if (-not $isEnt) { Log '提示：CloudContent / 聚焦类策略只在企业版、教育版生效，本机以用户设置（ContentDeliveryManager）为准' 'dim' }
     S "$CV\AdvertisingInfo" Enabled 0
     S "$P\AdvertisingInfo" DisabledByGroupPolicy 1
     S "$CV\Privacy" TailoredExperiencesWithDiagnosticDataEnabled 0
@@ -477,18 +464,20 @@ function Opt9 {
     foreach ($d in (@($env:TEMP, "$env:windir\Temp") | Select-Object -Unique)) {
         if (Test-Path -LiteralPath $d) { Clear-Dir $d $cutoff $true }
     }
-    if ($script:check) { Write-Host ('  可清理约 {0:N0} MB（清理类，不计入）' -f ($script:freed / 1MB)) -ForegroundColor DarkGray; return }
-    Write-Host ('  释放 {0:N0} MB（{1} 天内的文件和占用中的文件已跳过）' -f ($script:freed / 1MB), $TempAgeDays)
+    if ($script:check) { Log ('可清理约 {0:N0} MB（清理类，不计入）' -f ($script:freed / 1MB)) 'dim'; return }
+    Log ('释放 {0:N0} MB（{1} 天内的文件和占用中的文件已跳过）' -f ($script:freed / 1MB), $TempAgeDays)
     $script:ok++
 
     # 系统组件存储（WinSxS）：清掉被新版本替换的旧组件。不加 /ResetBase，已安装的更新仍可卸载
-    if ((Read-Host '  同时清理系统组件存储 (WinSxS)？需要几分钟 (y/N)').Trim().ToLower() -ne 'y') { return }
+    if (-not $Opt.WinSxS) { return }
+    Post @{ k = 'status'; t = '正在清理系统组件存储 (WinSxS)，需要几分钟...' }
+    Log '正在清理系统组件存储 (WinSxS)，需要几分钟...' 'dim'
     $free0 = (New-Object IO.DriveInfo -ArgumentList $env:SystemDrive).AvailableFreeSpace
-    Dism.exe /Online /Cleanup-Image /StartComponentCleanup
+    Dism.exe /Online /Cleanup-Image /StartComponentCleanup | Out-Null
     if ($LASTEXITCODE -eq 0) {
         $script:ok++
         $gain = (New-Object IO.DriveInfo -ArgumentList $env:SystemDrive).AvailableFreeSpace - $free0
-        Write-Host ('  组件清理完成，系统盘可用空间增加 {0:N0} MB' -f ([math]::Max(0, $gain) / 1MB))
+        Log ('组件清理完成，系统盘可用空间增加 {0:N0} MB' -f ([math]::Max(0, $gain) / 1MB))
     } else { $script:fail += "组件清理: DISM 返回 $LASTEXITCODE" }
 }
 
@@ -511,7 +500,7 @@ public static class KnownFolder {
 }
 '@
     }
-    $base = (Read-Host ('  目标目录（直接回车 = ' + $UsersDirDefault + '）')).Trim().Trim('"')
+    $base = ([string]$Opt.UsersDir).Trim().Trim('"')
     if (-not $base) { $base = $UsersDirDefault }
     $base = $base.TrimEnd('\')
     if ($base -notmatch '^[A-Za-z]:(\\|$)') { $script:fail += "移动用户文件夹: 请输入带盘符的完整路径 ($base)"; return }
@@ -520,8 +509,8 @@ public static class KnownFolder {
     if ([string]$drv.DriveType -ne 'Fixed' -or $drv.DriveFormat -notin 'NTFS', 'ReFS') {
         $script:fail += ('移动用户文件夹: 目标必须是本机 NTFS/ReFS 固定磁盘（当前 {0} / {1}）' -f $drv.DriveType, $drv.DriveFormat); return
     }
-    Write-Host "  桌面/下载/文档/图片/音乐/视频 将移到 $base 下" -ForegroundColor Yellow
-    $mv = (Read-Host '  同时移动现有文件？(Y = 移动文件, n = 只改位置)').Trim().ToLower() -ne 'n'
+    $mv = [bool]$Opt.MoveFiles
+    Log ("桌面/下载/文档/图片/音乐/视频 将移到 $base 下" + $(if ($mv) { '（连同现有文件）' } else { '（只改位置）' }))
     $sid = $me.User.Value
     $usf = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
     $ic = [StringComparison]::OrdinalIgnoreCase
@@ -539,8 +528,8 @@ public static class KnownFolder {
         $new = "$base\$sub"
         $old = [KnownFolder]::Get([guid]$kf)
         if ($old) { $old = $old.TrimEnd('\') }
-        Write-Host "  [$sub] $old -> $new"
-        if ($old -and $old -eq $new) { Write-Host '    已在目标位置，跳过' -ForegroundColor DarkGray; continue }
+        Log "[$sub] $old -> $new"
+        if ($old -and $old -eq $new) { Log '已在目标位置，跳过' 'dim'; continue }
         if ($old -and ($new.StartsWith("$old\", $ic) -or $old.StartsWith("$new\", $ic))) {
             $script:fail += "移动用户文件夹: [$sub] 新旧路径互相包含，已跳过"; continue
         }
@@ -567,13 +556,13 @@ public static class KnownFolder {
         if ($hr -ne 0) { $script:fail += ('移动用户文件夹: [{0}] 设置位置失败 (0x{1:X8})' -f $sub, $hr); continue }
         $uk = Get-Item -LiteralPath $usf
         if ($uk.GetValueNames() -contains $alt) { Set-ItemProperty -Path $usf -Name $alt -Value $new -Type ExpandString }
-        attrib +r $new 2>$null   # 只读属性让系统识别 desktop.ini（本地化名称和图标）
+        attrib +r $new 2>$null | Out-Null   # 只读属性让系统识别 desktop.ini（本地化名称和图标）
         $script:ok++; $changed++
     }
     if ($changed) {
-        Write-Host '  重启资源管理器...'
+        Log '重启资源管理器...' 'dim'
         Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue   # 系统会自动重新拉起
-        Write-Host '  如有程序仍使用旧路径，请注销或重启。'
+        Log '如有程序仍使用旧路径，请注销或重启。' 'dim'
     }
 }
 
@@ -616,8 +605,8 @@ function Restore-All {
                     }
                 }
                 'task'  { if ($e.enabled) { Enable-ScheduledTask -TaskPath $e.path -TaskName $e.name -ErrorAction Stop | Out-Null } }
-                'hib'   { if ([int]$e.value -eq 1) { powercfg /hibernate on 2>$null; if ($LASTEXITCODE -ne 0) { throw 'powercfg /hibernate on 失败' } } }
-                'power' { powercfg /overlaysetactive $e.value 2>$null; if ($LASTEXITCODE -ne 0) { throw 'powercfg 失败' } }
+                'hib'   { if ([int]$e.value -eq 1) { powercfg /hibernate on 2>$null | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'powercfg /hibernate on 失败' } } }
+                'power' { powercfg /overlaysetactive $e.value 2>$null | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'powercfg 失败' } }
                 'appx'  { $apps += $e.name }
             }
             $script:ok++
@@ -632,8 +621,8 @@ function Restore-All {
     $arr = $failed.ToArray(); [array]::Reverse($arr)
     foreach ($e in $arr) { [void]$script:undo.Add($e); $script:seen[$e.id] = $true }
     Save-Undo
-    if ($apps) { Write-Host ('  以下应用需在 Microsoft Store 搜索后手动重装: ' + ($apps -join '、')) -ForegroundColor Yellow }
-    Write-Host '  用户文件夹位置（序号 10）不在恢复范围内。' -ForegroundColor DarkGray
+    if ($apps) { Log ('以下应用需在 Microsoft Store 搜索后手动重装: ' + ($apps -join '、')) 'warn' }
+    Log '用户文件夹位置（序号 10）不在恢复范围内。' 'dim'
 }
 
 # ------------------------------------------------------------
@@ -642,84 +631,31 @@ function Prepare {
     # 从未优化过（或已全部恢复）时，先建系统还原点兜底
     if ($script:undo.Count -or $script:rpDone) { return }
     $script:rpDone = $true
-    Write-Host '  正在创建系统还原点（约需 1 分钟）...' -ForegroundColor DarkGray
+    Post @{ k = 'status'; t = '正在创建系统还原点（约需 1 分钟）...' }
+    Log '正在创建系统还原点（约需 1 分钟）...' 'dim'
     $rk = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
     $freq = (Get-ItemProperty $rk -ErrorAction SilentlyContinue).SystemRestorePointCreationFrequency
     Set-ItemProperty $rk SystemRestorePointCreationFrequency 0 -Type DWord -ErrorAction SilentlyContinue   # 解除「24 小时只能建一个」的限制
     try {
         Checkpoint-Computer -Description 'Windows 优化前' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-        Write-Host '  已创建系统还原点' -ForegroundColor DarkGray
-    } catch { Write-Host '  [提示] 未能创建还原点（系统保护可能未开启），继续执行；仍可用菜单 r 恢复' -ForegroundColor Yellow }
+        Log '已创建系统还原点' 'dim'
+    } catch { Log '[提示] 未能创建还原点（系统保护可能未开启），继续执行；仍可用「恢复到优化前」还原' 'warn' }
     if ($null -eq $freq) { Remove-ItemProperty $rk SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue }
     else { Set-ItemProperty $rk SystemRestorePointCreationFrequency $freq -Type DWord -ErrorAction SilentlyContinue }
 }
-function Start-Log { try { Start-Transcript -Path (Join-Path $bk 'log.txt') -Append | Out-Null } catch {} }
-function Stop-Log  { try { Stop-Transcript | Out-Null } catch {} }
 function Show-Result {
-    Write-Host ''
-    Write-Host '  ' -NoNewline
-    if ($script:fail.Count) { Chip '完成' DarkYellow Black } else { Chip '完成' DarkGreen White }
-    Write-Host "  成功 $($script:ok) 项，失败 $($script:fail.Count) 项"
-    if ($script:fail.Count) { $script:fail | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow } }
-    Write-Host "  恢复记录与日志: $bk" -ForegroundColor DarkGray
-    Write-Host '  部分设置需要注销或重启电脑才能完全生效。' -ForegroundColor DarkGray
+    $text = "完成：成功 $($script:ok) 项，失败 $($script:fail.Count) 项"
+    if ($script:fail.Count) {
+        Log $text 'warn'
+        $script:fail | ForEach-Object { Log $_ 'err' }
+    } else { Log $text 'ok' }
+    Log "恢复记录与日志: $bk" 'dim'
+    Log '部分设置需要注销或重启电脑才能完全生效。' 'dim'
+    Post @{ k = 'result'; t = $text; ok = (-not $script:fail.Count) }
 }
 
 # ------------------------------------------------------------
-# 界面：只用 ASCII 与中日韩字符，不用制表符/圆点等「宽度不定」字符，conhost 与 Windows Terminal 下都能对齐
-function TW([string]$s) {
-    # 显示宽度：中日韩及全角字符占 2 列
-    $n = 0
-    foreach ($ch in $s.ToCharArray()) {
-        $c = [int]$ch
-        if (($c -ge 0x1100 -and $c -le 0x115F) -or ($c -ge 0x2E80 -and $c -le 0xA4CF) -or ($c -ge 0xAC00 -and $c -le 0xD7A3) -or
-            ($c -ge 0xF900 -and $c -le 0xFAFF) -or ($c -ge 0xFE30 -and $c -le 0xFE4F) -or ($c -ge 0xFF00 -and $c -le 0xFF60) -or
-            ($c -ge 0xFFE0 -and $c -le 0xFFE6)) { $n += 2 } else { $n++ }
-    }
-    $n
-}
-function Cut([string]$s, [int]$max) {
-    if ($max -le 3) { return '' }
-    if ((TW $s) -le $max) { return $s }
-    $out = ''; $n = 0
-    foreach ($ch in $s.ToCharArray()) {
-        $cw = TW ([string]$ch)
-        if ($n + $cw -gt $max - 3) { break }
-        $out += $ch; $n += $cw
-    }
-    $out + '...'
-}
-function Pad([string]$s, [int]$w) { $s = Cut $s $w; $s + (' ' * [math]::Max(0, $w - (TW $s))) }
-function UiWidth {
-    $w = 100
-    try { $w = [int]$Host.UI.RawUI.WindowSize.Width } catch {}
-    if ($w -lt 40) { $w = 100 }
-    [math]::Min($w, 120)
-}
-# 带底色的文字一律 -NoNewline，换行单独用默认颜色写，避免滚屏时底色漫到整行
-function Chip($t, $bg = 'DarkGray', $fg = 'White') { Write-Host " $t " -NoNewline -BackgroundColor $bg -ForegroundColor $fg }
-function Bar($left, $right, $bg = 'DarkCyan', $fg = 'White') {
-    $w = (UiWidth) - 4
-    $gap = $w - (TW $left) - (TW $right)
-    if ($gap -lt 2) { $right = ''; $gap = 0 }
-    Write-Host '  ' -NoNewline
-    Write-Host (Pad ($left + (' ' * $gap) + $right) $w) -NoNewline -BackgroundColor $bg -ForegroundColor $fg
-    Write-Host ''
-}
-function Section($n) {
-    Write-Host ''
-    Write-Host '  ' -NoNewline
-    Chip ('{0,2}' -f $n) DarkCyan White
-    Write-Host (' ' + $menu[$n][0]) -ForegroundColor Cyan
-}
-function Ask($q) {
-    Write-Host "  $q " -NoNewline -ForegroundColor Yellow
-    ([string]$Host.UI.ReadLine()).Trim().ToLower()
-}
-function Wait-Menu { Write-Host ''; Write-Host '  按回车返回菜单' -NoNewline -ForegroundColor DarkGray; [void]$Host.UI.ReadLine() }
-
-# ------------------------------------------------------------
-# 菜单：序号 -> (名称, 简述, 函数, 分组)；详细说明见 README
+# 项目：序号 -> (名称, 简述, 函数, 分组)；详细说明见 README
 $menu = [ordered]@{
     '1'  = @('后台应用、Edge、视觉效果、电源', '商店应用禁后台（白名单除外），关 Edge 常驻与预启动，精简动画，最佳性能电源', ${function:Opt1}, '性能与系统')
     '2'  = @('服务、开机启动、快速启动与休眠', '禁用遥测/地图/WAP 推送服务与音频托盘自启，关快速启动，台式机关休眠', ${function:Opt2}, '性能与系统')
@@ -730,111 +666,580 @@ $menu = [ordered]@{
     '7'  = @('输入、语音、Copilot、传递优化',  '关输入与墨迹收集、在线语音、Recall，卸载 Copilot，传递优化只用 HTTP', ${function:Opt7}, '隐私')
     '8'  = @('数据收集计划任务',               '兼容性评估、CEIP、磁盘诊断、反馈、Office 遥测等（影响大版本升级前检查）', ${function:Opt8}, '隐私')
     '9'  = @('清理临时文件与系统组件',         ('清理 {0} 天前的 Temp 文件，可选清理 WinSxS 旧组件' -f $TempAgeDays), ${function:Opt9}, '清理与存储')
-    '10' = @('移动用户文件夹到其他盘',         ('桌面/下载/文档等移到 {0}，不含在 a 中，也不在 r 恢复范围' -f $UsersDirDefault), ${function:Opt10}, '清理与存储')
+    '10' = @('移动用户文件夹到其他盘',         '桌面/下载/文档等移到其他盘；不在「全选」中，也不在恢复范围内', ${function:Opt10}, '清理与存储')
 }
 
-function Show-Menu {
-    Clear-Host
-    $w = UiWidth
-    Write-Host ''
-    Bar '' ''
-    Bar '  Windows 优化工具' ($osInfo + '  ')
-    Bar '' ''
-    $tw = ($menu.Values | ForEach-Object { TW $_[0] } | Measure-Object -Maximum).Maximum
-    $g = $null
-    foreach ($k in $menu.Keys) {
-        $m = $menu[$k]
-        if ($m[3] -ne $g) {
-            $g = $m[3]
-            Write-Host ''
-            Write-Host '  ' -NoNewline; Write-Host ' ' -NoNewline -BackgroundColor DarkCyan; Write-Host " $g" -ForegroundColor Cyan
-        }
-        Write-Host '    ' -NoNewline
-        Chip ('{0,2}' -f $k)
-        Write-Host ('  ' + (Pad $m[0] $tw) + '   ') -NoNewline -ForegroundColor White
-        Write-Host (Cut $m[1] ($w - 4 - 4 - 2 - $tw - 3 - 2)) -ForegroundColor DarkGray
-    }
-    Write-Host ''
-    Write-Host '    ' -NoNewline
-    foreach ($a in @(@('a', '全部执行 1-9'), @('c', '状态检查'), @('r', '恢复到优化前'), @('q', '退出'))) {
-        Chip $a[0] DarkYellow Black
-        Write-Host (' ' + $a[1] + '     ') -NoNewline
-    }
-    Write-Host ''
-    $hint = '    可多选，空格或逗号分隔，例如 1 4 6'
-    if ($script:undo.Count) { $hint += "；已记录 $($script:undo.Count) 项改动，可用 r 恢复" }
-    Write-Host $hint -ForegroundColor DarkGray
-}
-
-Load-Undo
-try { $Host.UI.RawUI.WindowTitle = 'Windows 优化工具' } catch {}
-while ($true) {
-    Show-Menu
-    Write-Host ''
-    Write-Host '  > ' -NoNewline -ForegroundColor Cyan
-    $in = ([string]$Host.UI.ReadLine()).Trim().ToLower()
-    if ($in -in 'q', '0', 'quit', 'exit') { break }
-    if ($in -eq '') { continue }
-
-    if ($in -eq 'c') {
-        # 只读：逐项比对 1-9 的当前值与目标值，大版本更新后用来确认哪些设置被还原了
-        $script:check = $true; $script:match = 0; $script:diffN = 0
-        try {
-            foreach ($n in @($menu.Keys | Where-Object { $_ -ne '10' })) {
-                Section $n
-                & $menu[$n][2]
-            }
-        } finally { $script:check = $false }
-        Write-Host ''
-        Write-Host '  ' -NoNewline
-        if ($script:diffN) { Chip '检查' DarkYellow Black } else { Chip '检查' DarkGreen White }
-        Write-Host "  已生效 $($script:match) 项，未生效 $($script:diffN) 项"
-        if ($script:diffN) { Write-Host '  未生效的项重新执行对应序号即可（Windows 大版本更新后常见）。' -ForegroundColor Yellow }
-        Wait-Menu
-        continue
-    }
-
-    if ($in -eq 'r') {
-        if (-not $script:undo.Count) { Write-Host ''; Write-Host '  没有可恢复的记录。' -ForegroundColor Yellow; Wait-Menu; continue }
-        Write-Host ''
-        if ((Ask "将把已记录的 $($script:undo.Count) 项改动恢复到优化前，确认？(y/N)") -ne 'y') { continue }
-        Start-Log
-        $script:ok = 0; $script:fail = @()
-        Restore-All
-        Show-Result
-        Stop-Log
-        Wait-Menu
-        continue
-    }
-
-    Write-Host ''
-    if ($in -eq 'a') { $sel = @($menu.Keys | Where-Object { $_ -ne '10' }) }   # 10 会改动文件位置，不包含在「全部」里
-    else {
-        $sel = @()
-        foreach ($tok in ($in -split '[\s,，]+' | Where-Object { $_ })) {
-            # 键用字符串：OrderedDictionary 的整数下标会被当成位置序号而不是键
-            $n = [string]$tok
-            if ($menu.Contains($n)) { if ($sel -notcontains $n) { $sel += $n } }
-            else { Write-Host "  忽略无效输入: $tok" -ForegroundColor Red }
-        }
-    }
-    $sel = @($sel | Sort-Object { [int]$_ })
-    if (-not $sel.Count) { Write-Host '  没有有效选项。' -ForegroundColor Yellow; Wait-Menu; continue }
-
-    Write-Host '  将执行：' -ForegroundColor Cyan
-    foreach ($n in $sel) { Write-Host '    ' -NoNewline; Chip ('{0,2}' -f $n); Write-Host ('  ' + $menu[$n][0]) }
-    Write-Host ''
-    if ((Ask '确认执行？(Y/n)') -eq 'n') { continue }
-
-    Prepare
+# 后台入口：由界面调用
+function Run-Items([string[]]$sel) {
     Start-Log
+    Prepare
     $script:ok = 0; $script:fail = @()
+    $i = 0
     foreach ($n in $sel) {
-        Section $n
-        & $menu[$n][2]
-        Save-Undo   # 每项执行完立即保存，中途关窗也不丢记录
+        $i++
+        Post @{ k = 'progress'; i = $i; total = $sel.Count; t = $menu[$n][0] }
+        Log ('{0}  {1}' -f $n, $menu[$n][0]) 'head'
+        $f0 = $script:fail.Count
+        try { & $menu[$n][2] } catch { $script:fail += "$($menu[$n][0]) : $($_.Exception.Message)" }
+        Save-Undo   # 每项执行完立即保存，中途出错也不丢记录
+        $d = $script:fail.Count - $f0
+        Post @{ k = 'badge'; n = $n; ok = ($d -eq 0); t = $(if ($d) { "$d 项失败" } else { '已执行' }) }
     }
     Show-Result
     Stop-Log
-    Wait-Menu
+}
+function Run-Check {
+    # 只读：逐项比对 1-9 的当前值与目标值，大版本更新后用来确认哪些设置被还原了
+    $script:check = $true; $script:match = 0; $script:diffN = 0
+    $keys = @($menu.Keys | Where-Object { $_ -ne '10' })
+    try {
+        $i = 0
+        foreach ($n in $keys) {
+            $i++
+            Post @{ k = 'progress'; i = $i; total = $keys.Count; t = $menu[$n][0] }
+            Log ('{0}  {1}' -f $n, $menu[$n][0]) 'head'
+            $d0 = $script:diffN
+            & $menu[$n][2]
+            $d = $script:diffN - $d0
+            if (-not $d) { Log '全部已生效' 'ok' }
+            Post @{ k = 'badge'; n = $n; ok = ($d -eq 0); t = $(if ($d) { "$d 项未生效" } else { '已生效' }) }
+        }
+    } finally { $script:check = $false }
+    $text = "检查完成：已生效 $($script:match) 项，未生效 $($script:diffN) 项"
+    Log $text $(if ($script:diffN) { 'warn' } else { 'ok' })
+    if ($script:diffN) { Log '未生效的项重新执行对应项目即可（Windows 大版本更新后常见）。' 'dim' }
+    Post @{ k = 'result'; t = $text; ok = (-not $script:diffN) }
+}
+function Run-Restore {
+    Start-Log
+    $script:ok = 0; $script:fail = @()
+    Log '恢复到优化前' 'head'
+    Restore-All
+    Show-Result
+    Stop-Log
+}
+}
+
+# ============================================================
+#  图形界面
+# ============================================================
+function Fail-Box($msg) { [void][Windows.MessageBox]::Show($msg, 'Windows 优化工具', 'OK', 'Error') }
+try {
+    $Q = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    . $Logic
+
+    if (-not (Test-SameUser)) {
+        Fail-Box ('当前以 ' + $me.Name + " 身份运行，但桌面登录的是另一个账户，用户级设置会写错账户。`n`n请直接用管理员账户登录 Windows 后再运行本工具。")
+        exit 1
+    }
+
+    # 后台 runspace：加载同一份逻辑，所有修改都在这里执行，界面不卡
+    $rs = [RunspaceFactory]::CreateRunspace()
+    $rs.Open()
+    foreach ($n in $ConfigNames) { $rs.SessionStateProxy.SetVariable($n, (Get-Variable $n -ValueOnly)) }
+    $rs.SessionStateProxy.SetVariable('Q', $Q)
+    $ps = [PowerShell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript($Logic.ToString() + "`nLoad-Undo; Post-Undo")
+    [void]$ps.Invoke()
+
+    # ---------------- 窗口布局 ----------------
+    $xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Windows 优化工具" Width="1080" Height="800" MinWidth="880" MinHeight="560"
+        WindowStartupLocation="CenterScreen" Background="#F3F3F3"
+        FontFamily="Microsoft YaHei UI" FontSize="14" Foreground="#1A1A1A"
+        TextOptions.TextFormattingMode="Display" UseLayoutRounding="True" SnapsToDevicePixels="True">
+  <Window.Resources>
+    <BooleanToVisibilityConverter x:Key="B2V"/>
+    <Style x:Key="Card" TargetType="Border">
+      <Setter Property="Background" Value="#FFFFFF"/>
+      <Setter Property="BorderBrush" Value="#E5E5E5"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="8"/>
+    </Style>
+    <Style x:Key="Row" TargetType="Border">
+      <Setter Property="Padding" Value="18,15,16,15"/>
+      <Setter Property="BorderBrush" Value="#EDEDED"/>
+    </Style>
+    <Style x:Key="Group" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="#5F5F5F"/>
+      <Setter Property="Margin" Value="4,22,0,8"/>
+    </Style>
+    <Style x:Key="Num" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="15"/>
+      <Setter Property="Foreground" Value="#A0A0A0"/>
+    </Style>
+    <Style x:Key="Title" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="15"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+    </Style>
+    <Style x:Key="Desc" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Foreground" Value="#666666"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+      <Setter Property="LineHeight" Value="21"/>
+      <Setter Property="Margin" Value="0,4,0,0"/>
+    </Style>
+    <Style x:Key="Sub" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="TextWrapping" Value="Wrap"/>
+    </Style>
+    <Style x:Key="Badge" TargetType="Border">
+      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="Padding" Value="10,3"/>
+      <Setter Property="Margin" Value="12,0,0,0"/>
+      <Setter Property="VerticalAlignment" Value="Top"/>
+      <Setter Property="Visibility" Value="Collapsed"/>
+    </Style>
+    <Style TargetType="CheckBox">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Grid Background="Transparent">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <Border x:Name="box" Width="20" Height="20" CornerRadius="4" BorderThickness="1" BorderBrush="#8A8A8A"
+                      Background="#FFFFFF" VerticalAlignment="Top" Margin="0,1,0,0">
+                <Path x:Name="mark" Data="M 4 9.5 L 7.5 13 L 14 5.5" Stroke="#FFFFFF" StrokeThickness="2"
+                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Visibility="Collapsed"/>
+              </Border>
+              <ContentPresenter Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Top"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="box" Property="BorderBrush" Value="#0067C0"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="box" Property="Background" Value="#0067C0"/>
+                <Setter TargetName="box" Property="BorderBrush" Value="#0067C0"/>
+                <Setter TargetName="mark" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Btn" TargetType="Button">
+      <Setter Property="Background" Value="#FFFFFF"/>
+      <Setter Property="Foreground" Value="#1A1A1A"/>
+      <Setter Property="BorderBrush" Value="#D1D1D1"/>
+      <Setter Property="Padding" Value="20,8"/>
+      <Setter Property="Margin" Value="10,0,0,0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Grid>
+              <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="6"/>
+              <Border x:Name="ov" Background="#000000" Opacity="0" CornerRadius="6"/>
+              <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="ov" Property="Opacity" Value="0.05"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="ov" Property="Opacity" Value="0.1"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Background" Value="#0067C0"/>
+      <Setter Property="BorderBrush" Value="#0067C0"/>
+      <Setter Property="Foreground" Value="#FFFFFF"/>
+    </Style>
+    <Style x:Key="Link" TargetType="Button">
+      <Setter Property="Foreground" Value="#0067C0"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Margin" Value="16,0,0,0"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="Transparent" Padding="0,2">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Opacity" Value="0.75"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Padding" Value="6,4"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="BorderBrush" Value="#C8C8C8"/>
+    </Style>
+    <Style TargetType="ScrollBar">
+      <Setter Property="Width" Value="10"/>
+      <Setter Property="MinWidth" Value="10"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Track x:Name="PART_Track" IsDirectionReversed="True" Orientation="{TemplateBinding Orientation}">
+              <Track.Thumb>
+                <Thumb>
+                  <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                      <Border Background="#C4C4C4" CornerRadius="3" Margin="2,0"/>
+                    </ControlTemplate>
+                  </Thumb.Template>
+                </Thumb>
+              </Track.Thumb>
+            </Track>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="ProgressBar">
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Grid x:Name="PART_Track">
+              <Border Background="#E1E1E1" CornerRadius="2"/>
+              <Border x:Name="PART_Indicator" Background="#0067C0" CornerRadius="2" HorizontalAlignment="Left"/>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <Grid Margin="32,26,32,14">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <StackPanel>
+        <TextBlock Text="Windows 优化工具" FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock x:Name="osText" Margin="0,6,0,0" FontSize="13" Foreground="#5F5F5F"/>
+      </StackPanel>
+      <Border x:Name="undoPill" Grid.Column="1" VerticalAlignment="Center" Background="#E5F0FA" CornerRadius="13" Padding="14,5" Visibility="Collapsed">
+        <TextBlock x:Name="undoText" FontSize="12.5" Foreground="#005A9E"/>
+      </Border>
+    </Grid>
+
+    <Grid Grid.Row="1" Margin="32,0,32,22">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="3*"/>
+        <ColumnDefinition Width="22"/>
+        <ColumnDefinition Width="2*" MinWidth="300"/>
+      </Grid.ColumnDefinitions>
+      <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel x:Name="items" Margin="0,0,8,4">@ITEMS@</StackPanel>
+      </ScrollViewer>
+      <Border Grid.Column="2" Style="{StaticResource Card}" Margin="0,25,0,0">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+          <Grid Margin="20,16,18,10">
+            <TextBlock Text="运行记录" FontWeight="SemiBold"/>
+            <Button x:Name="btnLogDir" Content="打开日志目录" Style="{StaticResource Link}" HorizontalAlignment="Right"/>
+          </Grid>
+          <RichTextBox x:Name="logBox" Grid.Row="1" IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                       Padding="14,0,6,14" VerticalScrollBarVisibility="Auto" IsUndoEnabled="False">
+            <FlowDocument FontFamily="Microsoft YaHei UI" FontSize="13" LineHeight="21" PagePadding="0"/>
+          </RichTextBox>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="2" Background="#FFFFFF" BorderBrush="#E5E5E5" BorderThickness="0,1,0,0" Padding="32,16">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+          <TextBlock x:Name="status" Foreground="#5F5F5F" TextTrimming="CharacterEllipsis"/>
+          <ProgressBar x:Name="prog" Height="4" Width="300" HorizontalAlignment="Left" Margin="0,9,0,0" Maximum="1" Visibility="Collapsed"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="0,0,24,0">
+          <Button x:Name="btnAll" Content="全选 1-9" Style="{StaticResource Link}"/>
+          <Button x:Name="btnNone" Content="清空" Style="{StaticResource Link}"/>
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal">
+          <Button x:Name="btnCheck" Content="状态检查" Style="{StaticResource Btn}"/>
+          <Button x:Name="btnRestore" Content="恢复到优化前" Style="{StaticResource Btn}"/>
+          <Button x:Name="btnRun" Content="执行所选" Style="{StaticResource Primary}" MinWidth="132"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>
+'@
+
+    $rowTpl = @'
+<Border Style="{StaticResource Row}" BorderThickness="@BT@">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*"/>
+      <ColumnDefinition Width="Auto"/>
+    </Grid.ColumnDefinitions>
+    <StackPanel>
+      <CheckBox x:Name="cb@N@">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="26"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Style="{StaticResource Num}" Text="@N@"/>
+          <StackPanel Grid.Column="1">
+            <TextBlock Style="{StaticResource Title}" Text="@T@"/>
+            <TextBlock Style="{StaticResource Desc}" Text="@D@"/>
+          </StackPanel>
+        </Grid>
+      </CheckBox>@SUB@
+    </StackPanel>
+    <Border x:Name="badge@N@" Grid.Column="1" Style="{StaticResource Badge}">
+      <TextBlock x:Name="badgeT@N@" FontSize="12"/>
+    </Border>
+  </Grid>
+</Border>
+'@
+    $subXaml = @{
+        '2'  = @'
+<CheckBox x:Name="optSpooler" Margin="58,12,0,0" Visibility="{Binding IsChecked, ElementName=cb2, Converter={StaticResource B2V}}">
+  <TextBlock Style="{StaticResource Sub}" Text="同时禁用打印服务（禁用后无法打印，也不能「打印到 PDF」）"/>
+</CheckBox>
+'@
+        '9'  = @'
+<CheckBox x:Name="optWinSxS" Margin="58,12,0,0" Visibility="{Binding IsChecked, ElementName=cb9, Converter={StaticResource B2V}}">
+  <TextBlock Style="{StaticResource Sub}" Text="同时清理系统组件存储 WinSxS（需要几分钟，已安装的更新仍可卸载）"/>
+</CheckBox>
+'@
+        '10' = @'
+<StackPanel Margin="58,12,0,0" Visibility="{Binding IsChecked, ElementName=cb10, Converter={StaticResource B2V}}">
+  <StackPanel Orientation="Horizontal">
+    <TextBlock Style="{StaticResource Sub}" Text="目标目录" VerticalAlignment="Center"/>
+    <TextBox x:Name="optUsersDir" Width="240" Margin="12,0,0,0" Text="@DIR@"/>
+  </StackPanel>
+  <CheckBox x:Name="optMove" IsChecked="True" Margin="0,12,0,0">
+    <TextBlock Style="{StaticResource Sub}" Text="同时移动现有文件（不勾选则只改位置）"/>
+  </CheckBox>
+</StackPanel>
+'@
+    }
+    function X([string]$s) { [Security.SecurityElement]::Escape($s) }
+    $sb = New-Object Text.StringBuilder
+    $groups = [ordered]@{}
+    foreach ($k in $menu.Keys) { $g = $menu[$k][3]; if (-not $groups.Contains($g)) { $groups[$g] = @() }; $groups[$g] += $k }
+    $gi = 0
+    foreach ($g in $groups.Keys) {
+        $gm = $(if ($gi) { '' } else { ' Margin="4,0,0,8"' })
+        [void]$sb.Append('<TextBlock Style="{StaticResource Group}"' + $gm + ' Text="' + (X $g) + '"/>')
+        [void]$sb.Append('<Border Style="{StaticResource Card}"><StackPanel>')
+        $first = $true
+        foreach ($k in $groups[$g]) {
+            $sub = ''
+            if ($subXaml.ContainsKey($k)) { $sub = $subXaml[$k].Replace('@DIR@', (X $UsersDirDefault)) }
+            $row = $rowTpl.Replace('@BT@', $(if ($first) { '0' } else { '0,1,0,0' })).Replace('@N@', $k).
+                Replace('@T@', (X $menu[$k][0])).Replace('@D@', (X $menu[$k][1])).Replace('@SUB@', $sub)
+            [void]$sb.Append($row)
+            $first = $false
+        }
+        [void]$sb.Append('</StackPanel></Border>')
+        $gi++
+    }
+    $win = [Windows.Markup.XamlReader]::Parse($xaml.Replace('@ITEMS@', $sb.ToString()))
+
+    $wa = [Windows.SystemParameters]::WorkArea
+    $win.Height = [math]::Min($win.Height, $wa.Height - 40)
+    $win.Width = [math]::Min($win.Width, $wa.Width - 40)
+
+    foreach ($n in 'osText', 'undoPill', 'undoText', 'items', 'btnAll', 'btnNone', 'btnLogDir', 'logBox', 'status', 'prog',
+                   'btnCheck', 'btnRestore', 'btnRun', 'optSpooler', 'optWinSxS', 'optUsersDir', 'optMove') {
+        Set-Variable -Name $n -Value $win.FindName($n)
+    }
+    $keys = @($menu.Keys)
+    $cb = @{}
+    foreach ($k in $keys) { $cb[$k] = $win.FindName("cb$k") }
+    $doc = $logBox.Document
+    $osText.Text = $osInfo
+
+    # ---------------- 界面辅助 ----------------
+    $bc = New-Object Windows.Media.BrushConverter
+    $brushes = @{}
+    function Brush([string]$c) {
+        if (-not $brushes.ContainsKey($c)) { $b = $bc.ConvertFromString($c); $b.Freeze(); $brushes[$c] = $b }
+        $brushes[$c]
+    }
+    $lvColor = @{ info = '#1A1A1A'; dim = '#6E6E6E'; warn = '#9D5D00'; err = '#C42B1C'; ok = '#0F7B0F'; head = '#0067C0' }
+    function Add-Log([string]$t, [string]$lv = 'info') {
+        $p = New-Object Windows.Documents.Paragraph -ArgumentList (New-Object Windows.Documents.Run -ArgumentList $t)
+        $c = $lvColor[$lv]; if (-not $c) { $c = $lvColor.info }
+        $p.Foreground = Brush $c
+        if ($lv -eq 'head') {
+            $p.FontWeight = [Windows.FontWeights]::SemiBold
+            $p.Margin = New-Object Windows.Thickness -ArgumentList 0, $(if ($doc.Blocks.Count) { 14 } else { 0 }), 0, 4
+        } else { $p.Margin = New-Object Windows.Thickness -ArgumentList 0, 0, 0, 3 }
+        $doc.Blocks.Add($p)
+        $logBox.ScrollToEnd()
+    }
+    function Set-Status([string]$t, [string]$c = '#5F5F5F') { $status.Text = $t; $status.Foreground = Brush $c }
+    function Set-Badge($n, $ok, $t) {
+        $b = $win.FindName("badge$n"); $tb = $win.FindName("badgeT$n")
+        if ($null -eq $ok) { $b.Visibility = 'Collapsed'; return }
+        $b.Background = Brush $(if ($ok) { '#DFF6DD' } else { '#FFF4CE' })
+        $tb.Foreground = Brush $(if ($ok) { '#0F7B0F' } else { '#9D5D00' })
+        $tb.Text = $t
+        $b.Visibility = 'Visible'
+    }
+    $script:busy = $false
+    $script:undoCount = 0
+    $script:handle = $null
+    $script:result = $null
+    function Update-Run {
+        $n = @($keys | Where-Object { $cb[$_].IsChecked }).Count
+        $btnRun.Content = $(if ($n) { "执行所选 ($n)" } else { '执行所选' })
+        $btnRun.IsEnabled = (-not $script:busy) -and $n -gt 0
+    }
+    function Set-Undo($n) {
+        $script:undoCount = [int]$n
+        if ($n) { $undoText.Text = "已记录 $n 项改动，可恢复"; $undoPill.Visibility = 'Visible' }
+        else { $undoPill.Visibility = 'Collapsed' }
+        $btnRestore.IsEnabled = (-not $script:busy) -and $script:undoCount -gt 0
+    }
+    function Set-Busy([bool]$b) {
+        $script:busy = $b
+        $items.IsEnabled = -not $b
+        $btnAll.IsEnabled = -not $b
+        $btnNone.IsEnabled = -not $b
+        $btnCheck.IsEnabled = -not $b
+        $btnRestore.IsEnabled = (-not $b) -and $script:undoCount -gt 0
+        $prog.Visibility = $(if ($b) { 'Visible' } else { 'Collapsed' })
+        Update-Run
+    }
+    function Handle($m) {
+        switch ($m.k) {
+            'log'      { Add-Log $m.t $m.lv }
+            'status'   { Set-Status $m.t }
+            'progress' { Set-Status ('正在处理 {0}/{1}：{2}' -f $m.i, $m.total, $m.t); $prog.Value = ($m.i - 1) / $m.total }
+            'badge'    { Set-Badge $m.n $m.ok $m.t }
+            'result'   { $script:result = $m }
+            'undo'     { Set-Undo $m.n }
+        }
+    }
+    function Drain { $m = $null; while ($Q.TryDequeue([ref]$m)) { Handle $m } }
+    function Start-Op([string]$cmd, [hashtable]$vars, [string]$text) {
+        foreach ($k in $vars.Keys) { $rs.SessionStateProxy.SetVariable($k, $vars[$k]) }
+        $doc.Blocks.Clear()
+        Set-Status $text
+        $prog.Value = 0
+        $script:result = $null
+        $ps.Commands.Clear()
+        $ps.Streams.ClearStreams()
+        [void]$ps.AddScript("try { $cmd } finally { Post-Undo }")
+        $script:handle = $ps.BeginInvoke()
+        Set-Busy $true
+    }
+
+    # ---------------- 事件 ----------------
+    foreach ($k in $keys) { $cb[$k].Add_Checked({ Update-Run }); $cb[$k].Add_Unchecked({ Update-Run }) }
+    $btnAll.Add_Click({ foreach ($k in $keys) { $cb[$k].IsChecked = ($k -ne '10') } })
+    $btnNone.Add_Click({ foreach ($k in $keys) { $cb[$k].IsChecked = $false } })
+    $btnLogDir.Add_Click({
+        New-Item -ItemType Directory -Force $bk | Out-Null
+        Start-Process explorer.exe -ArgumentList "`"$bk`""
+    })
+    $btnRun.Add_Click({
+        $sel = @($keys | Where-Object { $cb[$_].IsChecked })
+        if (-not $sel.Count) { return }
+        $lines = ($sel | ForEach-Object { '{0}    {1}' -f $_, $menu[$_][0] }) -join "`n"
+        $msg = "将执行以下 $($sel.Count) 项：`n`n$lines`n`n确认执行？"
+        if ($sel -contains '10') { $msg += "`n`n第 10 项会移动用户文件夹，不在恢复范围内。" }
+        if ([Windows.MessageBox]::Show($win, $msg, '确认执行', 'YesNo', 'Question') -ne 'Yes') { return }
+        $o = @{ Spooler = [bool]$optSpooler.IsChecked; WinSxS = [bool]$optWinSxS.IsChecked
+                UsersDir = $optUsersDir.Text; MoveFiles = [bool]$optMove.IsChecked }
+        foreach ($k in $sel) { Set-Badge $k $null '' }
+        Start-Op 'Run-Items $Sel' @{ Sel = [string[]]$sel; Opt = $o } '正在准备...'
+    })
+    $btnCheck.Add_Click({
+        foreach ($k in $keys) { Set-Badge $k $null '' }
+        Start-Op 'Run-Check' @{} '正在检查...'
+    })
+    $btnRestore.Add_Click({
+        $msg = "将把已记录的 $($script:undoCount) 项改动恢复到优化前，确认？`n`n卸载的应用需在 Microsoft Store 手动重装；用户文件夹位置不在恢复范围内。"
+        if ([Windows.MessageBox]::Show($win, $msg, '恢复到优化前', 'YesNo', 'Warning') -ne 'Yes') { return }
+        foreach ($k in $keys) { Set-Badge $k $null '' }
+        Start-Op 'Run-Restore' @{} '正在恢复...'
+    })
+    $win.Add_Closing({
+        param($s, $e)
+        if ($script:busy) {
+            $e.Cancel = $true
+            [void][Windows.MessageBox]::Show($win, '正在执行，请等待完成后再关闭。', 'Windows 优化工具', 'OK', 'Information')
+        }
+    })
+
+    # 定时从队列取后台消息；后台任务结束后收尾
+    $timer = New-Object Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(80)
+    $timer.Add_Tick({
+        Drain
+        if ($script:busy -and $script:handle -and $script:handle.IsCompleted) {
+            $err = $null
+            try { [void]$ps.EndInvoke($script:handle) } catch { $err = $_.Exception }
+            $script:handle = $null
+            Drain
+            if ($err) {
+                $inner = $err; while ($inner.InnerException) { $inner = $inner.InnerException }
+                Add-Log ('执行中断：' + $inner.Message) 'err'
+                $script:result = @{ t = '执行中断，详见运行记录'; ok = $false }
+            }
+            Set-Busy $false
+            if ($script:result) { Set-Status $script:result.t $(if ($script:result.ok) { '#0F7B0F' } else { '#9D5D00' }) }
+            else { Set-Status '完成' }
+        }
+    })
+
+    Drain
+    Add-Log '勾选左侧项目后点「执行所选」；Windows 大版本更新后可先做一次「状态检查」。' 'dim'
+    Add-Log '部分设置需要注销或重启电脑才能完全生效。' 'dim'
+    Set-Status '准备就绪'
+    Set-Busy $false
+    $timer.Start()
+    [void]$win.ShowDialog()
+    $timer.Stop()
+} catch {
+    Fail-Box ('启动失败：' + $_.Exception.Message)
+} finally {
+    if ($ps) { $ps.Dispose() }
+    if ($rs) { $rs.Close() }
 }
