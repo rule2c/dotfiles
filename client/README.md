@@ -12,7 +12,7 @@ mihomo / Shadowrocket / sing-box 客户端配置。
 2. 添加「脚本操作」：
 
    ```
-   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳vmiss回落🏷ℹ️vmiss-🕳Oracle回落🏷ℹ️oracle_arm-vision🕳nosla回落🏷ℹ️nosla-
+   https://raw.githubusercontent.com/xream/scripts/main/surge/modules/sub-store-scripts/sing-box/template.js#type=组合订阅&name=all&outbound=🕳vmiss回落🏷ℹ️vmiss-🕳Oracle回落🏷ℹ️oracle_arm-🕳nosla回落🏷ℹ️nosla-
    ```
 
 3. 在其后再加本地脚本 `client/sing-box-reject-empty.js`，使空回落组拒绝连接而非直连。
