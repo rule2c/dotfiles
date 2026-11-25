@@ -43,7 +43,9 @@ $script:seen = @{}
 $script:check = $false   # 状态检查模式：S/Svc/DisTask/Remove-App 只比对不修改
 $script:match = 0; $script:diffN = 0
 
-# 把控制台字体换成等宽中文字体（新宋体），解决中英文混排错位、行距不均。
+# 控制台字体：优先用更纱黑体 Term（思源黑体 + Iosevka 的等宽合成，观感接近苹方，开源可商用），
+# 没装就退回新宋体。conhost 没有行距设置，行高 = 字号格高，靠字体自身的上下留白拉开行距：
+# 更纱的留白比新宋体大，所以格高给到 22，字面大小和原来 16 号新宋体相近，行距明显更松。
 # 只对传统控制台窗口(conhost)当场生效；Windows Terminal 会忽略，不影响使用。
 try {
     Add-Type -ErrorAction Stop -TypeDefinition @'
@@ -58,15 +60,29 @@ public static class ConFont {
     }
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GetStdHandle(int h);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetCurrentConsoleFontEx(IntPtr h, bool max, ref CFI f);
-    public static bool Set(string face, short size) {
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetCurrentConsoleFontEx(IntPtr h, bool max, ref CFI f);
+    public static string Set(string face, short size) {
         CFI f = new CFI();
         f.cbSize = (uint)Marshal.SizeOf(typeof(CFI));
         f.Y = size; f.Family = 54; f.Weight = 400; f.Face = face;
-        return SetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f);
+        IntPtr h = GetStdHandle(-11);
+        if (!SetCurrentConsoleFontEx(h, false, ref f)) return null;
+        CFI g = new CFI();
+        g.cbSize = f.cbSize;
+        return GetCurrentConsoleFontEx(h, false, ref g) ? g.Face : null;
     }
 }
 '@
-    foreach ($face in '新宋体', 'NSimSun', 'MS Gothic') { if ([ConFont]::Set($face, 16)) { break } }   # 字号 16，想更小改这个数字
+    # 字体未安装时 SetCurrentConsoleFontEx 也会返回成功并悄悄换成别的字体，所以要读回实际字体名核对
+    foreach ($f in @(
+            @('Sarasa Term SC', 22, '*Sarasa*|*更纱*'),     # 格高 22；嫌大改 20，嫌挤改 24
+            @('Sarasa Mono SC', 22, '*Sarasa*|*更纱*'),
+            @('新宋体', 16, '*新宋体*|*NSimSun*'),
+            @('NSimSun', 16, '*新宋体*|*NSimSun*'),
+            @('MS Gothic', 16, '*Gothic*'))) {
+        $got = [ConFont]::Set($f[0], $f[1])
+        if ($got -and @($f[2] -split '\|' | Where-Object { $got -like $_ }).Count) { break }
+    }
 } catch {}
 
 # ------------------------------------------------------------

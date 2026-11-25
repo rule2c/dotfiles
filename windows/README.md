@@ -14,6 +14,12 @@
 | 9 | 清理 Temp 中 1 天以前的文件；可选清理 WinSxS 旧组件（DISM，需几分钟） |
 | 10 | 移动用户文件夹到其他盘（默认 `D:\Users`，不含在 `a` 中） |
 
+### 字体
+
+脚本启动时会把控制台字体换成「更纱黑体 Term SC」（Sarasa Term SC，思源黑体 + Iosevka 合成的等宽字体，观感接近苹方，SIL OFL 开源），格高 22，行距比新宋体宽松；没装则退回新宋体。
+
+安装：到 [be5invis/Sarasa-Gothic Releases](https://github.com/be5invis/Sarasa-Gothic/releases) 下载 TTF 压缩包，解压后选中 `SarasaTermSC-*.ttf` → 右键「为所有用户安装」。只对传统控制台窗口生效；Windows Terminal 在其设置里改字体和 `cellHeight`。
+
 ### 本机配置
 
 脚本开头「本机配置」区集中了与具体电脑有关的设置，换电脑时只改这里：允许后台运行的应用（包系列名）、要关闭的音频托盘启动项和计划任务、Temp 保留目录与清理天数、用户文件夹默认目标盘。
