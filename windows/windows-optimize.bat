@@ -641,46 +641,122 @@ function Start-Log { try { Start-Transcript -Path (Join-Path $bk 'log.txt') -App
 function Stop-Log  { try { Stop-Transcript | Out-Null } catch {} }
 function Show-Result {
     Write-Host ''
-    Write-Host "完成：成功 $($script:ok) 项，失败 $($script:fail.Count) 项" -ForegroundColor Green
-    if ($script:fail.Count) { Write-Host '失败项：' -ForegroundColor Yellow; $script:fail | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow } }
-    Write-Host "恢复记录与日志: $bk"
-    Write-Host '部分设置需要注销或重启电脑才能完全生效。'
+    Write-Host '  ' -NoNewline
+    if ($script:fail.Count) { Chip '完成' DarkYellow Black } else { Chip '完成' DarkGreen White }
+    Write-Host "  成功 $($script:ok) 项，失败 $($script:fail.Count) 项"
+    if ($script:fail.Count) { $script:fail | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow } }
+    Write-Host "  恢复记录与日志: $bk" -ForegroundColor DarkGray
+    Write-Host '  部分设置需要注销或重启电脑才能完全生效。' -ForegroundColor DarkGray
 }
 
 # ------------------------------------------------------------
-# 菜单：序号 -> (名称, 说明, 函数)
+# 界面：只用 ASCII 与中日韩字符，不用制表符/圆点等「宽度不定」字符，conhost 与 Windows Terminal 下都能对齐
+function TW([string]$s) {
+    # 显示宽度：中日韩及全角字符占 2 列
+    $n = 0
+    foreach ($ch in $s.ToCharArray()) {
+        $c = [int]$ch
+        if (($c -ge 0x1100 -and $c -le 0x115F) -or ($c -ge 0x2E80 -and $c -le 0xA4CF) -or ($c -ge 0xAC00 -and $c -le 0xD7A3) -or
+            ($c -ge 0xF900 -and $c -le 0xFAFF) -or ($c -ge 0xFE30 -and $c -le 0xFE4F) -or ($c -ge 0xFF00 -and $c -le 0xFF60) -or
+            ($c -ge 0xFFE0 -and $c -le 0xFFE6)) { $n += 2 } else { $n++ }
+    }
+    $n
+}
+function Cut([string]$s, [int]$max) {
+    if ($max -le 3) { return '' }
+    if ((TW $s) -le $max) { return $s }
+    $out = ''; $n = 0
+    foreach ($ch in $s.ToCharArray()) {
+        $cw = TW ([string]$ch)
+        if ($n + $cw -gt $max - 3) { break }
+        $out += $ch; $n += $cw
+    }
+    $out + '...'
+}
+function Pad([string]$s, [int]$w) { $s = Cut $s $w; $s + (' ' * [math]::Max(0, $w - (TW $s))) }
+function UiWidth {
+    $w = 100
+    try { $w = [int]$Host.UI.RawUI.WindowSize.Width } catch {}
+    if ($w -lt 40) { $w = 100 }
+    [math]::Min($w, 120)
+}
+# 带底色的文字一律 -NoNewline，换行单独用默认颜色写，避免滚屏时底色漫到整行
+function Chip($t, $bg = 'DarkGray', $fg = 'White') { Write-Host " $t " -NoNewline -BackgroundColor $bg -ForegroundColor $fg }
+function Bar($left, $right, $bg = 'DarkCyan', $fg = 'White') {
+    $w = (UiWidth) - 4
+    $gap = $w - (TW $left) - (TW $right)
+    if ($gap -lt 2) { $right = ''; $gap = 0 }
+    Write-Host '  ' -NoNewline
+    Write-Host (Pad ($left + (' ' * $gap) + $right) $w) -NoNewline -BackgroundColor $bg -ForegroundColor $fg
+    Write-Host ''
+}
+function Section($n) {
+    Write-Host ''
+    Write-Host '  ' -NoNewline
+    Chip ('{0,2}' -f $n) DarkCyan White
+    Write-Host (' ' + $menu[$n][0]) -ForegroundColor Cyan
+}
+function Ask($q) {
+    Write-Host "  $q " -NoNewline -ForegroundColor Yellow
+    ([string]$Host.UI.ReadLine()).Trim().ToLower()
+}
+function Wait-Menu { Write-Host ''; Write-Host '  按回车返回菜单' -NoNewline -ForegroundColor DarkGray; [void]$Host.UI.ReadLine() }
+
+# ------------------------------------------------------------
+# 菜单：序号 -> (名称, 简述, 函数, 分组)；详细说明见 README
 $menu = [ordered]@{
-    '1' = @('性能：后台应用、Edge、视觉效果、电源', '策略禁止商店应用后台运行（白名单应用和系统组件除外）、关闭 Edge 后台常驻与启动加速、精简动画与透明效果、最佳性能电源模式（平衡计划且插电时）', ${function:Opt1})
-    '2' = @('服务、开机启动、快速启动与休眠', '禁用遥测/地图/WAP 推送服务，关闭音频托盘自启，关闭快速启动，台式机关闭休眠；打印服务单独询问', ${function:Opt2})
-    '3' = @('卸载小组件 (Widgets)',           '结束并卸载 Windows 小组件，并用策略防止重新安装', ${function:Opt3})
-    '4' = @('隐私：搜索',                     '关闭 Bing/云搜索/搜索要点/搜索历史', ${function:Opt4})
-    '5' = @('隐私：遥测、诊断、活动历史',     '遥测降到版本允许的最低级别（家庭/专业版为「必需」）、关闭错误报告/CEIP/兼容性数据收集/活动历史/反馈提示', ${function:Opt5})
-    '6' = @('隐私：广告、推荐与推广内容',     '关闭广告 ID、开始菜单推荐、锁屏/设置里的推广、预装应用推送', ${function:Opt6})
-    '7' = @('隐私：输入、语音、Copilot、传递优化', '关闭输入/墨迹收集、在线语音、Recall，卸载 Copilot 应用，传递优化只用 HTTP', ${function:Opt7})
-    '8' = @('禁用数据收集计划任务',           '禁用兼容性评估、CEIP、磁盘诊断、反馈、地图、Office 遥测、Xbox 存档同步等任务（会影响大版本更新前的兼容性检查）', ${function:Opt8})
-    '9' = @('清理临时文件与系统组件',         ('清理用户与系统 Temp 中 {0} 天以前的文件（占用中的文件、链接目标不受影响）；可选清理 WinSxS 旧组件' -f $TempAgeDays), ${function:Opt9})
-    '10' = @('移动用户文件夹到其他盘',        ('把桌面/下载/文档/图片/音乐/视频移到 {0}（可自定义；仅限 NTFS 固定磁盘，权限只给本人；不在 r 恢复范围内）' -f $UsersDirDefault), ${function:Opt10})
+    '1'  = @('后台应用、Edge、视觉效果、电源', '商店应用禁后台（白名单除外），关 Edge 常驻与预启动，精简动画，最佳性能电源', ${function:Opt1}, '性能与系统')
+    '2'  = @('服务、开机启动、快速启动与休眠', '禁用遥测/地图/WAP 推送服务与音频托盘自启，关快速启动，台式机关休眠', ${function:Opt2}, '性能与系统')
+    '3'  = @('卸载小组件 (Widgets)',           '卸载 Windows 小组件，策略阻止重装', ${function:Opt3}, '性能与系统')
+    '4'  = @('搜索隐私',                       '关闭 Bing、云搜索、搜索要点与搜索历史', ${function:Opt4}, '隐私')
+    '5'  = @('遥测、诊断与活动历史',           '遥测降到版本允许的最低级，关错误报告、CEIP、兼容性收集、活动历史', ${function:Opt5}, '隐私')
+    '6'  = @('广告、推荐与推广内容',           '关广告 ID、开始菜单推荐、锁屏与设置推广、预装应用推送', ${function:Opt6}, '隐私')
+    '7'  = @('输入、语音、Copilot、传递优化',  '关输入与墨迹收集、在线语音、Recall，卸载 Copilot，传递优化只用 HTTP', ${function:Opt7}, '隐私')
+    '8'  = @('数据收集计划任务',               '兼容性评估、CEIP、磁盘诊断、反馈、Office 遥测等（影响大版本升级前检查）', ${function:Opt8}, '隐私')
+    '9'  = @('清理临时文件与系统组件',         ('清理 {0} 天前的 Temp 文件，可选清理 WinSxS 旧组件' -f $TempAgeDays), ${function:Opt9}, '清理与存储')
+    '10' = @('移动用户文件夹到其他盘',         ('桌面/下载/文档等移到 {0}，不含在 a 中，也不在 r 恢复范围' -f $UsersDirDefault), ${function:Opt10}, '清理与存储')
 }
 
 function Show-Menu {
     Clear-Host
-    Write-Host '==============  Windows 优化工具  ==============' -ForegroundColor Cyan
-    Write-Host "  本机: $osInfo" -ForegroundColor DarkGray
+    $w = UiWidth
     Write-Host ''
+    Bar '' ''
+    Bar '  Windows 优化工具' ($osInfo + '  ')
+    Bar '' ''
+    $tw = ($menu.Values | ForEach-Object { TW $_[0] } | Measure-Object -Maximum).Maximum
+    $g = $null
     foreach ($k in $menu.Keys) {
-        Write-Host ("  [{0}] {1}" -f $k, $menu[$k][0]) -ForegroundColor White
-        Write-Host ("      {0}" -f $menu[$k][1]) -ForegroundColor DarkGray
-        Write-Host ''
+        $m = $menu[$k]
+        if ($m[3] -ne $g) {
+            $g = $m[3]
+            Write-Host ''
+            Write-Host '  ' -NoNewline; Write-Host ' ' -NoNewline -BackgroundColor DarkCyan; Write-Host " $g" -ForegroundColor Cyan
+        }
+        Write-Host '    ' -NoNewline
+        Chip ('{0,2}' -f $k)
+        Write-Host ('  ' + (Pad $m[0] $tw) + '   ') -NoNewline -ForegroundColor White
+        Write-Host (Cut $m[1] ($w - 4 - 4 - 2 - $tw - 3 - 2)) -ForegroundColor DarkGray
     }
-    Write-Host '  [a] 全部执行 (1-9，不含 10)   [c] 状态检查   [r] 恢复到优化前   [q] 退出' -ForegroundColor Yellow
-    if ($script:undo.Count) { Write-Host "  已记录 $($script:undo.Count) 项改动，可用 r 恢复" -ForegroundColor DarkGray }
-    Write-Host '  可多选，用空格或逗号分隔，例如: 1 4 6' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '    ' -NoNewline
+    foreach ($a in @(@('a', '全部执行 1-9'), @('c', '状态检查'), @('r', '恢复到优化前'), @('q', '退出'))) {
+        Chip $a[0] DarkYellow Black
+        Write-Host (' ' + $a[1] + '     ') -NoNewline
+    }
+    Write-Host ''
+    $hint = '    可多选，空格或逗号分隔，例如 1 4 6'
+    if ($script:undo.Count) { $hint += "；已记录 $($script:undo.Count) 项改动，可用 r 恢复" }
+    Write-Host $hint -ForegroundColor DarkGray
 }
 
 Load-Undo
+try { $Host.UI.RawUI.WindowTitle = 'Windows 优化工具' } catch {}
 while ($true) {
     Show-Menu
-    $in = (Read-Host "`n请输入序号").Trim().ToLower()
+    Write-Host ''
+    Write-Host '  > ' -NoNewline -ForegroundColor Cyan
+    $in = ([string]$Host.UI.ReadLine()).Trim().ToLower()
     if ($in -in 'q', '0', 'quit', 'exit') { break }
     if ($in -eq '') { continue }
 
@@ -689,29 +765,33 @@ while ($true) {
         $script:check = $true; $script:match = 0; $script:diffN = 0
         try {
             foreach ($n in @($menu.Keys | Where-Object { $_ -ne '10' })) {
-                Write-Host "`n== $n. $($menu[$n][0]) ==" -ForegroundColor Cyan
+                Section $n
                 & $menu[$n][2]
             }
         } finally { $script:check = $false }
         Write-Host ''
-        Write-Host "状态检查：已生效 $($script:match) 项，未生效 $($script:diffN) 项" -ForegroundColor Green
-        if ($script:diffN) { Write-Host '未生效的项重新执行对应序号即可（Windows 大版本更新后常见）。' -ForegroundColor Yellow }
-        Read-Host "`n按回车返回菜单" | Out-Null
+        Write-Host '  ' -NoNewline
+        if ($script:diffN) { Chip '检查' DarkYellow Black } else { Chip '检查' DarkGreen White }
+        Write-Host "  已生效 $($script:match) 项，未生效 $($script:diffN) 项"
+        if ($script:diffN) { Write-Host '  未生效的项重新执行对应序号即可（Windows 大版本更新后常见）。' -ForegroundColor Yellow }
+        Wait-Menu
         continue
     }
 
     if ($in -eq 'r') {
-        if (-not $script:undo.Count) { Read-Host '没有可恢复的记录，按回车返回菜单' | Out-Null; continue }
-        if ((Read-Host "将把已记录的 $($script:undo.Count) 项改动恢复到优化前，确认？(y/N)").Trim().ToLower() -ne 'y') { continue }
+        if (-not $script:undo.Count) { Write-Host ''; Write-Host '  没有可恢复的记录。' -ForegroundColor Yellow; Wait-Menu; continue }
+        Write-Host ''
+        if ((Ask "将把已记录的 $($script:undo.Count) 项改动恢复到优化前，确认？(y/N)") -ne 'y') { continue }
         Start-Log
         $script:ok = 0; $script:fail = @()
         Restore-All
         Show-Result
         Stop-Log
-        Read-Host "`n按回车返回菜单" | Out-Null
+        Wait-Menu
         continue
     }
 
+    Write-Host ''
     if ($in -eq 'a') { $sel = @($menu.Keys | Where-Object { $_ -ne '10' }) }   # 10 会改动文件位置，不包含在「全部」里
     else {
         $sel = @()
@@ -723,21 +803,22 @@ while ($true) {
         }
     }
     $sel = @($sel | Sort-Object { [int]$_ })
-    if (-not $sel.Count) { Read-Host '没有有效选项，按回车返回菜单' | Out-Null; continue }
+    if (-not $sel.Count) { Write-Host '  没有有效选项。' -ForegroundColor Yellow; Wait-Menu; continue }
 
+    Write-Host '  将执行：' -ForegroundColor Cyan
+    foreach ($n in $sel) { Write-Host '    ' -NoNewline; Chip ('{0,2}' -f $n); Write-Host ('  ' + $menu[$n][0]) }
     Write-Host ''
-    Write-Host ('将执行: ' + (($sel | ForEach-Object { "[$_] " + $menu[$_][0] }) -join ' / ')) -ForegroundColor Cyan
-    if ((Read-Host '确认执行？(Y/n)').Trim().ToLower() -eq 'n') { continue }
+    if ((Ask '确认执行？(Y/n)') -eq 'n') { continue }
 
     Prepare
     Start-Log
     $script:ok = 0; $script:fail = @()
     foreach ($n in $sel) {
-        Write-Host "`n== $n. $($menu[$n][0]) ==" -ForegroundColor Cyan
+        Section $n
         & $menu[$n][2]
         Save-Undo   # 每项执行完立即保存，中途关窗也不丢记录
     }
     Show-Result
     Stop-Log
-    Read-Host "`n按回车返回菜单" | Out-Null
+    Wait-Menu
 }
