@@ -81,7 +81,7 @@ proxy-providers:
 #   东京：reality → hysteria2 → cdn-ws
 #   洛杉矶：同上
 # 单个节点只出现在各自的回落组里；其他组只引用回落组，避免重复
-# 美国走哪台只在 🇺🇸 美国节点 里选，🚀 手动选择 只在 美国 / 日本 之间选，关联服务始终同一出口
+# 美国走哪台只在 🇺🇸 美国节点 里选，🚀 手动选择、🇬 谷歌服务 只在 美国 / 日本 之间选，关联服务始终同一出口
 proxy-groups:
   - name: 🚀 手动选择
     type: select
@@ -126,12 +126,18 @@ proxy-groups:
     type: select
     proxies: [🇯🇵 Oracle回落]
 
-  # 出口一致：AI、美区锁定、Google 全家（含 YouTube、FCM）只引用 🇺🇸 美国节点，
-  # 在 🇺🇸 美国节点 里切 vmiss / nosla，这些组一起跟着切，不会被拆到两台机器
+  # 出口一致：Google 全家（含 YouTube、FCM）和 AI 共用 🇬 谷歌服务 这一个开关，
+  # 在这里选 美国 / 日本，Google 账号与 Gemini、ChatGPT、Claude 等始终同一出口；
+  # 选美国时再到 🇺🇸 美国节点 里切 vmiss / nosla，这些组一起跟着切，不会被拆到两台机器
+  - name: 🇬 谷歌服务
+    type: select
+    proxies: [🇺🇸 美国节点, 🇯🇵 日本节点]
+
   - name: 🤖 AI服务
     type: select
-    proxies: [🇺🇸 美国节点]
+    proxies: [🇬 谷歌服务]
 
+  # 美区锁定始终走美国：Apple AI、T-Mobile、Google Voice、PayPal 等要求美国 IP
   - name: 📍 美区锁定
     type: select
     proxies: [🇺🇸 美国节点]
@@ -154,7 +160,6 @@ proxy-groups:
   - {name: 🌐 社交媒体, type: select, proxies: [🚀 手动选择]}
   - {name: 🚀 GitHub,   type: select, proxies: [🚀 手动选择]}
   - {name: 📢 谷歌FCM,  type: select, proxies: [🇬 谷歌服务]}
-  - {name: 🇬 谷歌服务,  type: select, proxies: [🇺🇸 美国节点]}
   - {name: 🍎 苹果服务,  type: select, proxies: [🎯 全球直连, 🚀 手动选择]}
   - {name: Ⓜ️ 微软服务, type: select, proxies: [🎯 全球直连, 🚀 手动选择]}
   - {name: 🎮 游戏平台,  type: select, proxies: [🎯 全球直连, 🚀 手动选择]}
