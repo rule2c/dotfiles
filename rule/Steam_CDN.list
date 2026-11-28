@@ -1,5 +1,4 @@
 DOMAIN-SUFFIX,cm.steampowered.com
-DOMAIN-SUFFIX,steamcdn-a.akamaihd.net
 DOMAIN-SUFFIX,steamserver.net
 IP-CIDR,103.10.124.0/23,no-resolve
 IP-CIDR,103.28.54.0/24,no-resolve

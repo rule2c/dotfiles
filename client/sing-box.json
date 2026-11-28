@@ -398,6 +398,12 @@
         "outbound": "📍 美区锁定"
       },
       {
+        "domain_suffix": [
+          "rewards.bing.com"
+        ],
+        "outbound": "🎯 全球直连"
+      },
+      {
         "rule_set": [
           "geosite-bing",
           "geosite-anthropic",
@@ -454,6 +460,12 @@
       },
       {
         "rule_set": [
+          "Steam_CDN"
+        ],
+        "outbound": "🎯 全球直连"
+      },
+      {
+        "rule_set": [
           "Custom_Proxy"
         ],
         "outbound": "🚀 手动选择"
@@ -461,7 +473,6 @@
       {
         "rule_set": [
           "geosite-category-games@cn",
-          "Steam_CDN",
           "geosite-category-game-platforms-download",
           "geosite-category-public-tracker"
         ],
