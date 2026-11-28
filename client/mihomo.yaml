@@ -126,16 +126,17 @@ proxy-groups:
     type: select
     proxies: [🇯🇵 Oracle回落]
 
-  # 出口一致：Google 全家（含 YouTube、FCM）和 AI 共用 🇬 谷歌服务 这一个开关，
-  # 在这里选 美国 / 日本，Google 账号与 Gemini、ChatGPT、Claude 等始终同一出口；
-  # 选美国时再到 🇺🇸 美国节点 里切 vmiss / nosla，这些组一起跟着切，不会被拆到两台机器
+  # Google 全家（含 YouTube、FCM、Gemini）单独一个开关，在这里选 美国 / 日本；
+  # Gemini 跟 Google 账号同一出口
   - name: 🇬 谷歌服务
     type: select
     proxies: [🇺🇸 美国节点, 🇯🇵 日本节点]
 
+  # AI（ChatGPT、Claude 等）只引用 🇺🇸 美国节点；
+  # 在 🇺🇸 美国节点 里切 vmiss / nosla，AI 和美区锁定一起跟着切，不会被拆到两台机器
   - name: 🤖 AI服务
     type: select
-    proxies: [🇬 谷歌服务]
+    proxies: [🇺🇸 美国节点]
 
   # 美区锁定始终走美国：Apple AI、T-Mobile、Google Voice、PayPal 等要求美国 IP
   - name: 📍 美区锁定
@@ -213,6 +214,10 @@ rules:
   - DOMAIN-SUFFIX,voice.google.com,📍 美区锁定
   - GEOSITE,paypal,📍 美区锁定
   - DOMAIN-SUFFIX,theriansaga.com,📍 美区锁定
+
+  # Gemini 跟 Google 账号走：要放在 category-ai-!cn 前面，否则会被 AI 规则先匹配
+  # google-deepmind 含 Gemini、AI Studio、NotebookLM、Gemini API 等（google-gemini 只是它的旧别名）
+  - GEOSITE,google-deepmind,🇬 谷歌服务
 
   # AI（Cloudflare 人机验证跟 AI 走同一出口）
   - GEOSITE,bing,🤖 AI服务
