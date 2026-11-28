@@ -9,6 +9,9 @@
 #   - TCP Keep Alive 600/15（nikki FAQ：降低 iPhone 等设备在透明代理下的耗电）
 #   - fake-ip-filter 加 Apple 推送、home.arpa
 #   - 嗅探器写全（QUIC 只嗅探 443）
+#   - 不用 GeoX 数据库：GEOSITE / GEOIP 全部换成 MetaCubeX meta-rules-dat 的 MRS 规则集
+#     （同一份数据源）。MRS 只存域名 / 后缀，geosite 里的 regexp 条目会丢，
+#     影响分流的几条已在对应位置用 DOMAIN-REGEX 补回；单标签主机名改由 fake-ip-filter 的 "*" 放行
 # 端口 / 监听 / 面板 / TUN / DNS 监听等由 nikki LuCI 混入，这里的同名项会被覆盖
 # ============================================================
 
@@ -22,13 +25,8 @@ tcp-concurrent: true
 find-process-mode: off
 keep-alive-idle: 600
 keep-alive-interval: 15
-geodata-mode: true
-geo-auto-update: true
-geo-update-interval: 72
-geox-url:
-  geoip: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"
-  geosite: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
-  mmdb: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+# 规则里已没有 GEOSITE / GEOIP，不再下载 GeoX 数据库
+geo-auto-update: false
 
 profile:
   store-selected: true
@@ -44,8 +42,9 @@ dns:
     - "+.lan"
     - "+.local"
     - "+.home.arpa"
-    - "geosite:private"
-    - "geosite:connectivity-check"
+    - "*"                                   # 单标签主机名（原 geosite:private 里的 regexp，MRS 不含）
+    - "rule-set:geosite-private"
+    - "rule-set:geosite-connectivity-check"
     - "+.msftconnecttest.com"
     - "+.msftncsi.com"
     - "time.*.com"
@@ -199,10 +198,12 @@ proxy-groups:
   - {name: 🐟 漏网之鱼,  type: select, proxies: [🚀 手动选择, 🎯 全球直连]}
   - {name: 🔀 非标端口,  type: select, proxies: [🐟 漏网之鱼, 🎯 全球直连]}
 
-# ---------------- 你自己仓库里的规则列表 ----------------
+# ---------------- 规则集 ----------------
 # 通过代理下载，国内拉 raw.githubusercontent.com 不会卡住；用手动选择组，东京挂了也能换节点更新
 rule-anchor:
   classical: &classical {type: http, behavior: classical, format: text, interval: 86400, proxy: 🚀 手动选择}
+  geosite: &geosite {type: http, behavior: domain, format: mrs, interval: 86400, proxy: 🚀 手动选择}
+  geoip: &geoip {type: http, behavior: ipcidr, format: mrs, interval: 86400, proxy: 🚀 手动选择}
 
 rule-providers:
   Apple-AI:      {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Apple-AI.list",                path: ./rules/Apple-AI.list}
@@ -211,6 +212,44 @@ rule-providers:
   Steam_CDN:     {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Steam_CDN.list",               path: ./rules/Steam_CDN.list}
   Custom_Port:   {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/Custom_Port_Direct.list",      path: ./rules/Custom_Port.list}
   HGhub:         {<<: *classical, url: "https://raw.githubusercontent.com/rule2c/dotfiles/refs/heads/main/rule/HGhub.list",                   path: ./rules/HGhub.list}
+  # MetaCubeX meta-rules-dat 的 MRS 规则集（取代 GEOSITE / GEOIP），同样通过代理下载
+  "geosite-anthropic": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/anthropic.mrs", path: "./ruleset/geosite/anthropic.mrs"}
+  "geosite-apple": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/apple.mrs", path: "./ruleset/geosite/apple.mrs"}
+  "geosite-bing": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/bing.mrs", path: "./ruleset/geosite/bing.mrs"}
+  "geosite-category-ads-all": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ads-all.mrs", path: "./ruleset/geosite/category-ads-all.mrs"}
+  "geosite-category-ai-!cn": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-ai-!cn.mrs", path: "./ruleset/geosite/category-ai-!cn.mrs"}
+  "geosite-category-communication": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-communication.mrs", path: "./ruleset/geosite/category-communication.mrs"}
+  "geosite-category-game-platforms-download": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-game-platforms-download.mrs", path: "./ruleset/geosite/category-game-platforms-download.mrs"}
+  "geosite-category-games": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-games.mrs", path: "./ruleset/geosite/category-games.mrs"}
+  "geosite-category-games@cn": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-games@cn.mrs", path: "./ruleset/geosite/category-games@cn.mrs"}
+  "geosite-category-public-tracker": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-public-tracker.mrs", path: "./ruleset/geosite/category-public-tracker.mrs"}
+  "geosite-category-social-media-!cn": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-social-media-!cn.mrs", path: "./ruleset/geosite/category-social-media-!cn.mrs"}
+  "geosite-category-speedtest": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/category-speedtest.mrs", path: "./ruleset/geosite/category-speedtest.mrs"}
+  "geosite-cn": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/cn.mrs", path: "./ruleset/geosite/cn.mrs"}
+  "geosite-connectivity-check": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/connectivity-check.mrs", path: "./ruleset/geosite/connectivity-check.mrs"}
+  "geosite-disney": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/disney.mrs", path: "./ruleset/geosite/disney.mrs"}
+  "geosite-gfw": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/gfw.mrs", path: "./ruleset/geosite/gfw.mrs"}
+  "geosite-github": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/github.mrs", path: "./ruleset/geosite/github.mrs"}
+  "geosite-google": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/google.mrs", path: "./ruleset/geosite/google.mrs"}
+  "geosite-google-deepmind": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/google-deepmind.mrs", path: "./ruleset/geosite/google-deepmind.mrs"}
+  "geosite-googlefcm": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/googlefcm.mrs", path: "./ruleset/geosite/googlefcm.mrs"}
+  "geosite-hbo": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/hbo.mrs", path: "./ruleset/geosite/hbo.mrs"}
+  "geosite-microsoft": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/microsoft.mrs", path: "./ruleset/geosite/microsoft.mrs"}
+  "geosite-netflix": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/netflix.mrs", path: "./ruleset/geosite/netflix.mrs"}
+  "geosite-openai": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/openai.mrs", path: "./ruleset/geosite/openai.mrs"}
+  "geosite-oracle": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/oracle.mrs", path: "./ruleset/geosite/oracle.mrs"}
+  "geosite-paypal": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/paypal.mrs", path: "./ruleset/geosite/paypal.mrs"}
+  "geosite-primevideo": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/primevideo.mrs", path: "./ruleset/geosite/primevideo.mrs"}
+  "geosite-private": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/private.mrs", path: "./ruleset/geosite/private.mrs"}
+  "geosite-steam": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/steam.mrs", path: "./ruleset/geosite/steam.mrs"}
+  "geosite-tiktok": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/tiktok.mrs", path: "./ruleset/geosite/tiktok.mrs"}
+  "geosite-youtube": {<<: *geosite, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/youtube.mrs", path: "./ruleset/geosite/youtube.mrs"}
+  "geoip-cn": {<<: *geoip, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/cn.mrs", path: "./ruleset/geoip/cn.mrs"}
+  "geoip-facebook": {<<: *geoip, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/facebook.mrs", path: "./ruleset/geoip/facebook.mrs"}
+  "geoip-google": {<<: *geoip, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/google.mrs", path: "./ruleset/geoip/google.mrs"}
+  "geoip-private": {<<: *geoip, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/private.mrs", path: "./ruleset/geoip/private.mrs"}
+  "geoip-telegram": {<<: *geoip, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/telegram.mrs", path: "./ruleset/geoip/telegram.mrs"}
+  "geoip-twitter": {<<: *geoip, url: "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/twitter.mrs", path: "./ruleset/geoip/twitter.mrs"}
 
 # ---------------- 分流规则（从上往下匹配） ----------------
 rules:
@@ -225,16 +264,18 @@ rules:
   # STUN 直连，NAT 探测拿到的是本地真实出口，打洞才可能成功
   - AND,((NETWORK,UDP),(DST-PORT,3478)),🎯 全球直连
   # 本地地址直连
-  - GEOSITE,private,🎯 全球直连
-  - GEOIP,private,🎯 全球直连,no-resolve
+  - RULE-SET,geosite-private,🎯 全球直连
+  - RULE-SET,geoip-private,🎯 全球直连,no-resolve
 
   # 广告拦截：要放在 Google / AI 规则前面（geosite:google 本身含 Google 广告域名）
-  # 白名单：被误杀的域名写在这条 GEOSITE 前面，例如
+  # 白名单：被误杀的域名写在这条规则前面，例如
   # - DOMAIN-SUFFIX,example.com,🎯 全球直连
-  - GEOSITE,category-ads-all,🛑 广告拦截
+  - RULE-SET,geosite-category-ads-all,🛑 广告拦截
+  # ↓ 补回 MRS 丢掉的 regexp（category-ads-all ← ookla-speedtest@ads）。规则里不能有逗号，{2,6} 已展开
+  - DOMAIN-REGEX,^speed\.(coe|open)\.ad\.[a-z]{2}[a-z]?[a-z]?[a-z]?[a-z]?\.prod\.hosts\.ooklaserver\.net$,🛑 广告拦截
 
   # 海外 QUIC 拒绝，让浏览器回落到 TCP（与 OpenClash 的 QUIC REJECT 一致）
-  - AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((GEOSITE,cn)))),REJECT
+  - AND,((NETWORK,UDP),(DST-PORT,443),(NOT,((RULE-SET,geosite-cn)))),REJECT
 
   # 美区锁定
   - RULE-SET,Apple-AI,📍 美区锁定
@@ -244,34 +285,46 @@ rules:
   - DOMAIN-SUFFIX,t-mobilemoney.com,📍 美区锁定
   - DOMAIN-SUFFIX,t-mo.co,📍 美区锁定
   - DOMAIN-SUFFIX,sprint.com,📍 美区锁定
-  - GEOSITE,paypal,📍 美区锁定
+  - RULE-SET,geosite-paypal,📍 美区锁定
   - DOMAIN-SUFFIX,theriansaga.com,📍 美区锁定
 
   # Gemini 跟 Google 账号走：要放在 category-ai-!cn 前面，否则会被 AI 规则先匹配
   # google-deepmind 含 Gemini、AI Studio、NotebookLM、Gemini API 等（google-gemini 只是它的旧别名）
-  - GEOSITE,google-deepmind,🇬 谷歌服务
+  - RULE-SET,geosite-google-deepmind,🇬 谷歌服务
 
   # AI（Cloudflare 人机验证跟 AI 走同一出口）
-  # Bing 积分走直连：要放在 GEOSITE,bing 前面，否则会被 AI 规则先匹配
+  # Bing 积分走直连：要放在 geosite-bing 前面，否则会被 AI 规则先匹配
   - DOMAIN-SUFFIX,rewards.bing.com,🎯 全球直连
-  - GEOSITE,bing,🤖 AI服务
-  - GEOSITE,anthropic,🤖 AI服务
-  - GEOSITE,openai,🤖 AI服务
-  - GEOSITE,category-ai-!cn,🤖 AI服务
+  - RULE-SET,geosite-bing,🤖 AI服务
+  - RULE-SET,geosite-anthropic,🤖 AI服务
+  - RULE-SET,geosite-openai,🤖 AI服务
+  # ↓ 补回 regexp（openai）：ChatGPT 推送通道在 azure.com 下，漏掉会被 geosite-microsoft 送去直连
+  - DOMAIN-REGEX,^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$,🤖 AI服务
+  - RULE-SET,geosite-category-ai-!cn,🤖 AI服务
   - DOMAIN,challenges.cloudflare.com,🤖 AI服务
 
   # 谷歌：子集放在大类前面
-  - GEOSITE,googlefcm,📢 谷歌FCM
-  - GEOSITE,youtube,🇬 谷歌服务   # YouTube 和 Google 账号同一出口
-  - GEOSITE,google,🇬 谷歌服务
-  - GEOIP,google,🇬 谷歌服务,no-resolve
+  - RULE-SET,geosite-googlefcm,📢 谷歌FCM
+  - RULE-SET,geosite-youtube,🇬 谷歌服务   # YouTube 和 Google 账号同一出口
+  - RULE-SET,geosite-google,🇬 谷歌服务
+  # ↓ 补回 regexp（google ← google-play@cn 的 googlevideo 缓存）
+  - DOMAIN-REGEX,^r+[0-9]+(---|\.)sn-(2x3|ni5|j5o)\w{5}\.googlevideo\.com$,🇬 谷歌服务
+  - DOMAIN-REGEX,^r+[0-9]+(---|\.)sn-(2x3|ni5|j5o)\w{5}\.xn--ngstr-lra8j\.com$,🇬 谷歌服务
+  - RULE-SET,geoip-google,🇬 谷歌服务,no-resolve
 
   # 流媒体 / TikTok：彼此独立的服务，可以单独选别的出口
-  - GEOSITE,netflix,🎥 流媒体
-  - GEOSITE,disney,🎥 流媒体
-  - GEOSITE,hbo,🎥 流媒体
-  - GEOSITE,primevideo,🎥 流媒体
-  - GEOSITE,tiktok,🎶 TikTok
+  - RULE-SET,geosite-netflix,🎥 流媒体
+  # ↓ 补回 regexp（netflix 的 amazonaws 接口）
+  - DOMAIN-REGEX,(^|\.)apiproxy-device-prod-nlb-.+\.amazonaws\.com$,🎥 流媒体
+  - DOMAIN-REGEX,(^|\.)apiproxy-website-nlb-prod-.+\.amazonaws\.com$,🎥 流媒体
+  - DOMAIN-REGEX,(^|\.)dualstack\.apiproxy-.+\.amazonaws\.com$,🎥 流媒体
+  - DOMAIN-REGEX,(^|\.)dualstack\.ichnaea-web-.+\.amazonaws\.com$,🎥 流媒体
+  - RULE-SET,geosite-disney,🎥 流媒体
+  # ↓ 补回 regexp（disney ← hotstar）
+  - DOMAIN-REGEX,^hses[1-7]?\.akamaized\.net$,🎥 流媒体
+  - RULE-SET,geosite-hbo,🎥 流媒体
+  - RULE-SET,geosite-primevideo,🎥 流媒体
+  - RULE-SET,geosite-tiktok,🎶 TikTok
 
   # 自定义直连 / 代理
   - RULE-SET,Custom_Direct,🎯 全球直连,no-resolve
@@ -280,29 +333,35 @@ rules:
   - RULE-SET,Custom_Proxy,🚀 手动选择,no-resolve
 
   # 国内服务直连
-  - GEOSITE,category-games@cn,🎯 全球直连
-  - GEOSITE,category-game-platforms-download,🎯 全球直连
-  - GEOSITE,category-public-tracker,🎯 全球直连
+  - RULE-SET,geosite-category-games@cn,🎯 全球直连
+  # ↓ 补回 regexp（category-games@cn ← epicgames@cn、mihoyo-cn）
+  - DOMAIN-REGEX,^cdn\d-epicgames-\d+\.file\.myqcloud\.com$,🎯 全球直连
+  - DOMAIN-REGEX,^epicgames-download\d-\d+\.file\.myqcloud\.com$,🎯 全球直连
+  - DOMAIN-REGEX,^.+-mihayo\.akamaized\.net$,🎯 全球直连
+  - RULE-SET,geosite-category-game-platforms-download,🎯 全球直连
+  - RULE-SET,geosite-category-public-tracker,🎯 全球直连
 
   # 常规分流
-  - GEOSITE,oracle,🔴 Oracle服务
-  - GEOSITE,category-communication,💬 即时通讯
-  - GEOSITE,category-social-media-!cn,🌐 社交媒体
-  - GEOSITE,github,🚀 GitHub
-  # HGhub：放在 GitHub 之后，让 github.com 继续走 🚀 GitHub 组；要在 GEOSITE,cn 之前，否则 .cn 的 CDN 会被直连
+  - RULE-SET,geosite-oracle,🔴 Oracle服务
+  - RULE-SET,geosite-category-communication,💬 即时通讯
+  - RULE-SET,geosite-category-social-media-!cn,🌐 社交媒体
+  - RULE-SET,geosite-github,🚀 GitHub
+  # HGhub：放在 GitHub 之后，让 github.com 继续走 🚀 GitHub 组；要在 geosite-cn 之前，否则 .cn 的 CDN 会被直连
   - RULE-SET,HGhub,🚀 手动选择
-  - GEOSITE,microsoft,Ⓜ️ 微软服务
-  - GEOSITE,apple,🍎 苹果服务
-  - GEOSITE,steam,🎮 Steam
-  - GEOSITE,category-games,🎮 游戏平台
-  - GEOIP,telegram,💬 即时通讯,no-resolve
-  - GEOIP,twitter,🌐 社交媒体,no-resolve
-  - GEOIP,facebook,🌐 社交媒体,no-resolve
-  - GEOSITE,category-speedtest,🚀 测速工具
+  - RULE-SET,geosite-microsoft,Ⓜ️ 微软服务
+  - RULE-SET,geosite-apple,🍎 苹果服务
+  - RULE-SET,geosite-steam,🎮 Steam
+  - RULE-SET,geosite-category-games,🎮 游戏平台
+  # ↓ 补回 regexp（category-games ← epicgames）
+  - DOMAIN-REGEX,^epicgames-download\d\.akamaized\.net$,🎮 游戏平台
+  - RULE-SET,geoip-telegram,💬 即时通讯,no-resolve
+  - RULE-SET,geoip-twitter,🌐 社交媒体,no-resolve
+  - RULE-SET,geoip-facebook,🌐 社交媒体,no-resolve
+  - RULE-SET,geosite-category-speedtest,🚀 测速工具
 
   # GFW / 国内 / 兜底
-  - GEOSITE,gfw,🚀 手动选择
-  - GEOSITE,cn,🎯 全球直连
-  - GEOIP,cn,🎯 全球直连,no-resolve
+  - RULE-SET,geosite-gfw,🚀 手动选择
+  - RULE-SET,geosite-cn,🎯 全球直连
+  - RULE-SET,geoip-cn,🎯 全球直连,no-resolve
   - RULE-SET,Custom_Port,🔀 非标端口
   - MATCH,🐟 漏网之鱼
