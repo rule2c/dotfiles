@@ -28,6 +28,9 @@ jobs:
           python3 .github/scripts/geosite_to_classical.py 'category-ai-!cn' rule/AI_NonCN.list \
             --title 'AI 服务（非中国大陆），对应 mihomo 的 GEOSITE,category-ai-!cn，供 Shadowrocket 使用' \
             --min-rules 100
+          python3 .github/scripts/geosite_to_classical.py google-deepmind rule/Google_DeepMind.list \
+            --title 'Gemini / Google AI，对应 mihomo 的 GEOSITE,google-deepmind，供 Shadowrocket 使用' \
+            --min-rules 20
 
       - name: Convert classical lists to sing-box rule sets
         run: python3 .github/scripts/classical_to_singbox.py
