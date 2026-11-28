@@ -5,9 +5,9 @@ on:
     - cron: "30 22 * * *"   # 每天北京时间 06:30
   push:
     branches: [main]
-    paths:                  # 手改列表或转换脚本后立刻重新生成 sing-box 规则集
-      - "rule/*.list"
-      - ".github/scripts/classical_to_singbox.py"
+    paths:                  # 改了转换脚本或本工作流后立刻重新生成
+      - ".github/scripts/geosite_to_classical.py"
+      - ".github/workflows/update-geosite-lists.yml"
   workflow_dispatch:
 
 concurrency:
@@ -31,9 +31,6 @@ jobs:
           python3 .github/scripts/geosite_to_classical.py google-deepmind rule/Google_DeepMind.list \
             --title 'Gemini / Google AI，对应 mihomo 的 GEOSITE,google-deepmind，供 Shadowrocket 使用' \
             --min-rules 20
-
-      - name: Convert classical lists to sing-box rule sets
-        run: python3 .github/scripts/classical_to_singbox.py
 
       - name: Commit if changed
         run: |

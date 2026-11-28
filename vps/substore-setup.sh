@@ -141,13 +141,10 @@ BACKEND_PATH=$BP
     $BASE$BP/download/collection/all?target=mihomo
   Shadowrocket（首页订阅；用 URI 格式，target=shadowrocket 的 Clash 格式会被识别成 Chrome120 指纹）：
     $BASE$BP/download/collection/all?target=URI
-  sing-box（只有节点，完整配置用下面的文件链接）：
-    $BASE$BP/download/collection/all?target=sing-box
 
 完整配置文件（在 Sub-Store「文件」里新建后的链接）：
   OpenClash / Clash Verge：$BASE$BP/api/file/mihomo
   Shadowrocket：          $BASE$BP/api/file/shadowrocket
-  sing-box：              $BASE$BP/api/file/sing-box（文件需加模板脚本和 sing-box-reject-empty.js，见 client/README.md）
 EOF
 
 # 在仓库里运行时，顺手把链接填进 client/ 下的模板（单独下载本脚本时找不到模板则跳过）
@@ -161,10 +158,6 @@ fi
 if [[ -f "$SRC/shadowrocket.conf" ]]; then
   sed "s#SUBSTORE_URL#$SR_SUB#g" "$SRC/shadowrocket.conf" > "$OUT/shadowrocket.conf"
 fi
-# sing-box 模板由 Sub-Store 脚本按组合订阅名插入节点，不含链接，原样复制
-[[ -f "$SRC/sing-box.json" ]] && cp "$SRC/sing-box.json" "$OUT/sing-box.json"
-# 空回落组改为拒绝的脚本，要加在模板脚本之后（见 client/README.md）
-[[ -f "$SRC/sing-box-reject-empty.js" ]] && cp "$SRC/sing-box-reject-empty.js" "$OUT/sing-box-reject-empty.js"
 echo; cat "$INFO"; echo
 if [[ -n "$(ls -A "$OUT" 2>/dev/null)" ]]; then grn "已生成填好链接的配置：$OUT/（把内容粘贴到 Sub-Store 的「文件」里）"; fi
 ylw "以上信息已保存在 $INFO。后端路径就是访问密码，不要公开。"
