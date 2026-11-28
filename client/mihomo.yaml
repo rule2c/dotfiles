@@ -138,7 +138,8 @@ proxy-groups:
     type: select
     proxies: [🇺🇸 美国节点]
 
-  # 美区锁定始终走美国：Apple AI、T-Mobile、Google Voice、PayPal 等要求美国 IP
+  # 美区锁定始终走美国：Apple AI、T-Mobile、PayPal 等要求美国 IP
+  # Google Voice 不在这里：它跟着 🇬 谷歌服务 走，换号等操作时把谷歌服务临时切回美国
   - name: 📍 美区锁定
     type: select
     proxies: [🇺🇸 美国节点]
@@ -211,7 +212,6 @@ rules:
   - DOMAIN-SUFFIX,t-mobilemoney.com,📍 美区锁定
   - DOMAIN-SUFFIX,t-mo.co,📍 美区锁定
   - DOMAIN-SUFFIX,sprint.com,📍 美区锁定
-  - DOMAIN-SUFFIX,voice.google.com,📍 美区锁定
   - GEOSITE,paypal,📍 美区锁定
   - DOMAIN-SUFFIX,theriansaga.com,📍 美区锁定
 
